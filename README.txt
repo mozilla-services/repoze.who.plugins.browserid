@@ -1,7 +1,6 @@
-pyramid_whoauth
-===============
+repoze.who.plugins.browserid
+============================
 
-This is an authentication policy for __pyramid__ that calls out to the
-__repoze.who__ API.  It's similar to the __pyramid_who__ package but
-provides some more configuration options and some default views.
+This a plugin for __repoze.who__ that allows user authentication via Mozilla's
+BrowserID project (a.k.a. the Verified Email Protocol).
 
