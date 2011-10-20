@@ -74,12 +74,13 @@ def parse_auth_header(value):
 
     For example, given the following auth header value:
 
-        'Digest realm="Sync" userame=user1 response="123456"'
+        'BrowserID realm="www.example.com" assertion="abcdef"
 
     This function will return the following dict:
 
-        {"scheme": "Digest", realm: "Sync",
-         "username": "user1", "response": "123456"}
+        {"scheme": "BrowseriD",
+          realm: "www.example.com",
+         "assertion": "abcdef"}
 
     """
     scheme, kvpairs_str = value.split(None, 1)
