@@ -83,20 +83,18 @@ class BrowserIDPlugin(object):
 
     implements(IIdentifier, IChallenger, IAuthenticator)
 
-    def __init__(self, var_name=None, verifier_url=None, challenge_body=None,
-                 urlopen=None):
+    def __init__(self, postback_url=None, verifier_url=None, urlopen=None,
+                 challenge_body=None):
         if verifier_url is None:
             verifier_url = "https://browserid.org/verify"
-        if var_name is None:
-            var_name = "browserid_assertion"
-        if challenge_body is None:
-            challenge_body = DEFAULT_CHALLENGE_BODY
         if urlopen is None:
             urlopen = secure_urlopen
+        if challenge_body is None:
+            challenge_body = DEFAULT_CHALLENGE_BODY
+        self.postback_url = postback_url
         self.verifier_url = verifier_url
-        self.var_name = var_name
-        self.challenge_body = challenge_body
         self.urlopen = urlopen
+        self.challenge_body = challenge_body
 
     def identify(self, environ):
         """Extract BrowserID credentials from the request.
@@ -111,7 +109,7 @@ class BrowserIDPlugin(object):
         # It might be in the query string,
         qs = environ.get("QUERY_STRING", "")
         if qs:
-            assertion = urlparse.parse_qs(qs).get(self.var_name)
+            assertion = urlparse.parse_qs(qs).get("browserid.assertion")
         # It might be in an HTTP-Auth header.
         if assertion is None:
             authz = environ.get("HTTP_AUTHORIZATION")
@@ -152,23 +150,29 @@ class BrowserIDPlugin(object):
 
         The challenge app will send a HTML page with embedded javascript
         to walk the user through the BrowserID login process.  Once complete
-        it will send the obtained BrowserID assertion back to the original
-        page.
+        it will post the obtained BrowserID assertion to the configured
+        postback URL.
         """
         def challenge_app(environ, start_response):
-            headers = list(app_headers)
-            headers.extend(forget_headers)
-            for name, value in headers:
-                if name.lower() == "content-type":
-                    break
-            else:
-                headers.append(("Content-Type", "text/html"))
-            start_response(status, headers)
+            headers = list(forget_headers)
+            # Always include a WWW-Authenticate BrowserID challenge,
+            # to accomodate any non-browser clients that can't do JS.
+            realm = environ.get("HTTP_HOST", "")
+            challenge = "BrowserID realm=\"%s\"" % (realm,)
+            headers.append(('WWW-Authenticate', challenge))
+            # Interpolate various request data into the challenge body.
             challenge_vars = {}
-            challenge_vars["var_name"] = self.var_name
-            challenge_vars["request_uri"] = wsgiref.util.request_uri(environ)
             challenge_vars["request_method"] = environ.get("REQUEST_METHOD")
-            return [self.challenge_body % challenge_vars]
+            challenge_vars["request_uri"] = wsgiref.util.request_uri(environ)
+            if self.postback_url is not None:
+                challenge_vars["postback_url"] = self.postback_url
+            else:
+                challenge_vars["postback_url"] = challenge_vars["request_uri"]
+            challenge_body = self.challenge_body % challenge_vars
+            # Send the challenge page as text/html.
+            headers.append(("Content-Type", "text/html"))
+            start_response(status, headers)
+            return [challenge_body]
         return challenge_app
 
     def authenticate(self, environ, identity):
@@ -226,8 +230,8 @@ class BrowserIDPlugin(object):
         return data
 
 
-def make_plugin(var_name=None, verifier_url=None, challenge_body=None,
-                urlopen=None):
+def make_plugin(postback_url=None, verifier_url=None, urlopen=None,
+                challenge_body=None):
     """Make a BrowserIDPlugin using values from a .ini config file.
 
     This is a helper function for loading a BrowserIDPlugin via the
@@ -241,7 +245,8 @@ def make_plugin(var_name=None, verifier_url=None, challenge_body=None,
         urlopen = resolveDotted(urlopen)
         if urlopen is not None:
             assert callable(urlopen)
-    plugin = BrowserIDPlugin(var_name, verifier_url, challenge_body, urlopen)
+    plugin = BrowserIDPlugin(postback_url, verifier_url, urlopen,
+                             challenge_body)
     return plugin
 
 
@@ -275,14 +280,14 @@ $(function() {
     //
     $("#signin").click(function() {
         navigator.id.getVerifiedEmail(function(assertion) {
-            console.log(arguments);
             if (assertion) {
-                var $form = $("<form method=POST action='/login'>" +
-                              "<input type='hidden' " +
-                              "       name='browserid.assertion' " +
-                              "       value='" + assertion + "' />" +
-                              "<input type='hidden' name='came_from' "+
-                              "       value='%(request_uri)s' />" +
+                var $form = $("<form method=POST "+
+                              "      action='%(postback_url)s'>" +
+                              "  <input type='hidden' " +
+                              "         name='browserid.assertion' " +
+                              "         value='" + assertion + "' />" +
+                              "  <input type='hidden' name='came_from' "+
+                              "         value='%(request_uri)s' />" +
                               "</form>").appendTo($("body"));
                 $form.submit();
             }
