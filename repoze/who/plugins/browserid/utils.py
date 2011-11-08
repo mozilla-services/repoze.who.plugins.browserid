@@ -116,7 +116,9 @@ def parse_auth_header(value):
 # This is done on-demand and the result cached in this global variable.
 DEFAULT_CACERT_FILE = None
 POSSIBLE_CACERT_FILES = ["/etc/ssl/certs/ca-certificates.crt",
-                         "/etc/ssl/certs/ca-bundle.crt"]
+                         "/etc/ssl/certs/ca-bundle.crt",
+                         "/etc/ssl/ca-bundle.pem",
+                         "/etc/pki/tls/certs/ca-bundle.crt"]
 
 _OPENER_CACHE = {}
 
