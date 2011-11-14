@@ -176,18 +176,23 @@ class BrowserIDPlugin(object):
         postback URL.
         """
         def challenge_app(environ, start_response):
-            headers = list(forget_headers)
+            request = Request(environ)
+            # Preserve the "came_from" variable across page loads.
+            request_uri = wsgiref.util.request_uri(environ)
+            came_from = request.params.get("came_from", request_uri)
             # Always include a WWW-Authenticate BrowserID challenge,
             # to accomodate any non-browser clients that can't do JS.
             realm = environ.get("HTTP_HOST", "")
             challenge = "BrowserID realm=\"%s\"" % (realm,)
+            headers = list(forget_headers)
             headers.append(('WWW-Authenticate', challenge))
             # Interpolate various request data into the challenge body.
             challenge_vars = {}
-            challenge_vars["request_method"] = environ.get("REQUEST_METHOD")
-            challenge_vars["request_uri"] = wsgiref.util.request_uri(environ)
             challenge_vars["postback_url"] = self.postback_url
             challenge_vars["came_from_field"] = self.came_from_field
+            challenge_vars["came_from"] = came_from
+            challenge_vars["request_uri"] = request_uri
+            challenge_vars["request_method"] = environ.get("REQUEST_METHOD")
             challenge_body = self.challenge_body % challenge_vars
             # Send the challenge page as text/html.
             headers.append(("Content-Type", "text/html"))
@@ -338,7 +343,7 @@ $(function() {
                               "         value='" + assertion + "' />" +
                               "  <input type='hidden' " +
                               "         name='%(came_from_field)s' "+
-                              "         value='%(request_uri)s' />" +
+                              "         value='%(came_from)s' />" +
                               "</form>").appendTo($("body"));
                 $form.submit();
             }
