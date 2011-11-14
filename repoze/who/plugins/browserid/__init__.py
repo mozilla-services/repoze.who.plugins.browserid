@@ -47,11 +47,13 @@ import wsgiref.util
 
 from zope.interface import implements
 
+from webob import Request, Response
+
 from repoze.who.interfaces import IIdentifier, IAuthenticator, IChallenger
+from repoze.who.api import get_api
 from repoze.who.utils import resolveDotted
 
-from repoze.who.plugins.browserid.utils import (parse_auth_header,
-                                                secure_urlopen)
+from repoze.who.plugins.browserid.utils import secure_urlopen
 
 
 class BrowserIDPlugin(object):
@@ -83,46 +85,52 @@ class BrowserIDPlugin(object):
 
     implements(IIdentifier, IChallenger, IAuthenticator)
 
-    def __init__(self, postback_url=None, verifier_url=None, urlopen=None,
-                 challenge_body=None):
+    def __init__(self, postback_url=None, came_from_field=None,
+                 challenge_body=None, rememberer_name=None, verifier_url=None,
+                 urlopen=None):
+        if postback_url is None:
+            postback_url = "/repoze.who.plugins.browserid.postback"
+        if came_from_field is None:
+            came_from_field = "came_from"
+        if challenge_body is None:
+            challenge_body = DEFAULT_CHALLENGE_BODY
         if verifier_url is None:
             verifier_url = "https://browserid.org/verify"
         if urlopen is None:
             urlopen = secure_urlopen
-        if challenge_body is None:
-            challenge_body = DEFAULT_CHALLENGE_BODY
         self.postback_url = postback_url
+        self.came_from_field = came_from_field
+        self.challenge_body = challenge_body
+        self.rememberer_name = rememberer_name
         self.verifier_url = verifier_url
         self.urlopen = urlopen
-        self.challenge_body = challenge_body
 
     def identify(self, environ):
         """Extract BrowserID credentials from the request.
 
         This method extracts a BrowserID assertion from the request, either
-        from the query-string or the HTTP Authorization header.  If found,
-        the returned identity will contain a single key "browserid.assertion"
-        containing the (unverified) assertion.
+        from the query-string, POST body or HTTP Authorization header.  If
+        found, the returned identity will map the key "browserid.assertion"
+        to the (unverified) assertion string.
         """
-        # We need to find a BrowserID assertion.
+        request = Request(environ)
         assertion = None
-        # It might be in the query string,
-        qs = environ.get("QUERY_STRING", "")
-        if qs:
-            assertion = urlparse.parse_qs(qs).get("browserid.assertion")
-        # It might be in an HTTP-Auth header.
+        # If we're at the postback url, look in the POST vars.
+        if request.path == self.postback_url:
+            assertion = request.POST.get("browserid.assertion")
+        # Otherwise, we might have the assertion in the GET vars.
         if assertion is None:
-            authz = environ.get("HTTP_AUTHORIZATION")
-            if authz is not None:
-                try:
-                    params = parse_auth_header(authz)
-                    if params["scheme"].lower() == "browserid":
-                        assertion = params.get("assertion")
-                except ValueError:
-                    pass
-        # If found, that's all we need for the identity.
+            assertion = request.GET.get("browserid.assertion")
+        # Or we might have it in the Authorization header.
+        if assertion is None:
+            authz = request.authorization
+            if authz is not None and authz.startswith("BrowserID "):
+                (scheme, assertion) = authz.split(None, 1)
+                assertion = assertion.strip()
+        # If we didn't find it then we can't authenticate.
         if assertion is None:
             return None
+        # The assertion is all we need for an identity.
         identity = {}
         identity["browserid.assertion"] = assertion
         return identity
@@ -130,22 +138,36 @@ class BrowserIDPlugin(object):
     def remember(self, environ, identity):
         """Remember the authenticated identity.
 
-        This is a no-op for BrowserID since it has no builtin mechanism
-        for persistent logins.  You should combine this plugin e.g. a
-        signed-cookie plugin to achieve such functionality.
+        BrowserID has no builtin mechanism for persistent logins.  This
+        method simply delegates to another IIdentifier plugin if configured.
         """
-        return []
+        headers = []
+        api = get_api(environ)
+        if self.rememberer_name is not None and api is not None:
+            for name, plugin in api.identifiers:
+                if name == self.rememberer_name:
+                    i_headers = plugin.remember(environ, identity)
+                    if i_headers is not None:
+                        headers.extend(i_headers)
+        return headers
 
     def forget(self, environ, identity):
         """Forget the authenticated identity.
 
-        This is a no-op for BrowserID since it has no builtin mechanism
-        for persistent logins.  You should combine this plugin e.g. a
-        signed-cookie plugin to achieve such functionality.
+        BrowserID has no builtin mechanism for persistent logins.  This
+        method simply delegates to another IIdentifier plugin if configured.
         """
-        return []
+        headers = []
+        api = get_api(environ)
+        if self.rememberer_name is not None and api is not None:
+            for name, plugin in api.identifiers:
+                if name == self.rememberer_name:
+                    i_headers = plugin.forget(environ, identity)
+                    if i_headers is not None:
+                        headers.extend(i_headers)
+        return headers
 
-    def challenge(self, environ, status, app_headers, forget_headers):
+    def challenge(self, environ, status, app_headers=(), forget_headers=()):
         """Challenge for BrowserID credentials.
 
         The challenge app will send a HTML page with embedded javascript
@@ -164,10 +186,7 @@ class BrowserIDPlugin(object):
             challenge_vars = {}
             challenge_vars["request_method"] = environ.get("REQUEST_METHOD")
             challenge_vars["request_uri"] = wsgiref.util.request_uri(environ)
-            if self.postback_url is not None:
-                challenge_vars["postback_url"] = self.postback_url
-            else:
-                challenge_vars["postback_url"] = challenge_vars["request_uri"]
+            challenge_vars["postback_url"] = self.postback_url
             challenge_body = self.challenge_body % challenge_vars
             # Send the challenge page as text/html.
             headers.append(("Content-Type", "text/html"))
@@ -180,23 +199,32 @@ class BrowserIDPlugin(object):
 
         This method verifies a BrowserID assertion and uses the contained
         email as the authenticated userid of the user.
+
+        This method also handles the logic for the postback url.  If the user
+        is not authenicated then a new challenge gets issued; if they are
+        authenticated then they get redirected to their final destination.
         """
+        request = Request(environ)
         # Is this a BrowserID identity?
         assertion = identity.get("browserid.assertion")
         if assertion is None:
+            self._rechallenge_at_postback(request)
             return None
         # The audience should be the submitted host.
-        # Fail out if it's wrong to prevent replay attacks.
+        # Fail out if it's wrong to prevent replay of captured assertions.
         audience = environ.get('HTTP_HOST')
         if audience is None:
+            self._rechallenge_at_postback(request)
             return None
         # Verify the assertion and extract data into the identity.
         data = self._verify_assertion(assertion, audience)
         if data is None:
+            self._rechallenge_at_postback(request)
             return None
         identity["browserid.audience"] = audience
         userid = identity["email"] = data["email"]
         # Success!
+        self._redirect_from_postback(request, identity)
         return userid
 
     def _verify_assertion(self, assertion, audience):
@@ -229,9 +257,27 @@ class BrowserIDPlugin(object):
             return None
         return data
 
+    def _rechallenge_at_postback(self, request):
+        """Re-issue a failed auth challenge at the postback url."""
+        if request.path == self.postback_url:
+            challenge_app = self.challenge(request.environ, "401 Unauthorized")
+            environ["repoze.who.application"] = challenge_app
 
-def make_plugin(postback_url=None, verifier_url=None, urlopen=None,
-                challenge_body=None):
+    def _redirect_from_postback(self, request, identity):
+        """Redirect from the postback URL after a successful authentication."""
+        if request.path == self.postback_url:
+            came_from = request.params.get(self.came_from_field)
+            if came_from is None:
+                came_from = request.referer or "/"
+            response = Response()
+            response.status = 302
+            response.location = came_from
+            #response.headers.update(self.remember(request.environ, identity))
+            request.environ["repoze.who.application"] = response
+
+
+def make_plugin(postback_url=None, came_from_field=None, challenge_body=None,
+                rememberer_name=None, verifier_url=None, urlopen=None):
     """Make a BrowserIDPlugin using values from a .ini config file.
 
     This is a helper function for loading a BrowserIDPlugin via the
@@ -239,14 +285,17 @@ def make_plugin(postback_url=None, verifier_url=None, urlopen=None,
     strings to the appropriate type then passes them on to the plugin.
     """
     if isinstance(challenge_body, basestring):
-        with open(challenge_body, "rb") as f:
-            challenge_body = f.read()
+        try:
+            challenge_body = resolveDotted(challenge_body)
+        except (ValueError, ImportError):
+            with open(challenge_body, "rb") as f:
+                challenge_body = f.read()
     if isinstance(urlopen, basestring):
         urlopen = resolveDotted(urlopen)
         if urlopen is not None:
             assert callable(urlopen)
-    plugin = BrowserIDPlugin(postback_url, verifier_url, urlopen,
-                             challenge_body)
+    plugin = BrowserIDPlugin(postback_url, came_from_field, challenge_body,
+                             rememberer_name, verifier_url, urlopen)
     return plugin
 
 

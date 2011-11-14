@@ -40,76 +40,12 @@ Helper functions for repoze.who.plugins.browserid.
 """
 
 import os
-import re
 import ssl
 import time
 import socket
 import httplib
 import urllib2
 from fnmatch import fnmatch
-
-
-# Regular expression matching a single param in the HTTP_AUTHORIZATION header.
-# This is basically <name>=<value> where <value> can be an unquoted token,
-# an empty quoted string, or a quoted string where the ending quote is *not*
-# preceded by a backslash.
-_AUTH_PARAM_RE = r'([a-zA-Z0-9_\-]+)=(([a-zA-Z0-9_\-]+)|("")|(".*[^\\]"))'
-_AUTH_PARAM_RE = re.compile(r"^\s*" + _AUTH_PARAM_RE + r"\s*$")
-
-# Regular expression matching an unescaped quote character.
-_UNESC_QUOTE_RE = r'(^")|([^\\]")'
-_UNESC_QUOTE_RE = re.compile(_UNESC_QUOTE_RE)
-
-# Regular expression matching a backslash-escaped characer.
-_ESCAPED_CHAR = re.compile(r"\\.")
-
-
-def parse_auth_header(value):
-    """Parse an authorization header string into an identity dict.
-
-    This function can be used to parse the value from an Authorization
-    header into a dict of its constituent parameters.  The auth scheme
-    name will be included under the key "scheme", and any other auth
-    params will appear as keys in the dictionary.
-
-    For example, given the following auth header value:
-
-        'BrowserID realm="www.example.com" assertion="abcdef"
-
-    This function will return the following dict:
-
-        {"scheme": "BrowseriD",
-          realm: "www.example.com",
-         "assertion": "abcdef"}
-
-    """
-    scheme, kvpairs_str = value.split(None, 1)
-    # Split the parameters string into individual key=value pairs.
-    # In the simple case we can just split by commas to get each pair.
-    # Unfortunately this will break if one of the values contains a comma.
-    # So if we find a component that isn't a well-formed key=value pair,
-    # then we stitch bits back onto the end of it until it is.
-    kvpairs = []
-    if kvpairs_str:
-        for kvpair in kvpairs_str.split(","):
-            if not kvpairs or _AUTH_PARAM_RE.match(kvpairs[-1]):
-                kvpairs.append(kvpair)
-            else:
-                kvpairs[-1] = kvpairs[-1] + "," + kvpair
-        if not _AUTH_PARAM_RE.match(kvpairs[-1]):
-            raise ValueError('Malformed auth parameters')
-    # Now we can just split by the equal-sign to get each key and value.
-    params = {"scheme": scheme}
-    for kvpair in kvpairs:
-        (key, value) = kvpair.strip().split("=", 1)
-        # For quoted strings, remove quotes and backslash-escapes.
-        if value.startswith('"'):
-            value = value[1:-1]
-            if _UNESC_QUOTE_RE.search(value):
-                raise ValueError("Unescaped quote in quoted-string")
-            value = _ESCAPED_CHAR.sub(lambda m: m.group(0)[1], value)
-        params[key] = value
-    return params
 
 
 # When using secure_urlopen we search for the platform default ca-cert file.
