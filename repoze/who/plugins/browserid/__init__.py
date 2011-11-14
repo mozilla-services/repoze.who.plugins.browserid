@@ -187,6 +187,7 @@ class BrowserIDPlugin(object):
             challenge_vars["request_method"] = environ.get("REQUEST_METHOD")
             challenge_vars["request_uri"] = wsgiref.util.request_uri(environ)
             challenge_vars["postback_url"] = self.postback_url
+            challenge_vars["came_from_field"] = self.came_from_field
             challenge_body = self.challenge_body % challenge_vars
             # Send the challenge page as text/html.
             headers.append(("Content-Type", "text/html"))
@@ -335,7 +336,8 @@ $(function() {
                               "  <input type='hidden' " +
                               "         name='browserid.assertion' " +
                               "         value='" + assertion + "' />" +
-                              "  <input type='hidden' name='came_from' "+
+                              "  <input type='hidden' " +
+                              "         name='%(came_from_field)s' "+
                               "         value='%(request_uri)s' />" +
                               "</form>").appendTo($("body"));
                 $form.submit();
