@@ -42,7 +42,6 @@ A repoze.who plugin for authentication via BrowserID:
 """
 
 import json
-import urlparse
 import wsgiref.util
 
 from zope.interface import implements
@@ -116,7 +115,7 @@ class BrowserIDPlugin(object):
         request = Request(environ)
         assertion = None
         # If we're at the postback url, look in the POST vars.
-        if request.path == self.postback_url:
+        if request.path == self.postback_url and request.method == "POST":
             assertion = request.POST.get("browserid.assertion")
         # Otherwise, we might have the assertion in the GET vars.
         if assertion is None:
@@ -124,9 +123,9 @@ class BrowserIDPlugin(object):
         # Or we might have it in the Authorization header.
         if assertion is None:
             authz = request.authorization
-            if authz is not None and authz.startswith("BrowserID "):
-                (scheme, assertion) = authz.split(None, 1)
-                assertion = assertion.strip()
+            if authz is not None:
+                if authz[0].lower() == "browserid":
+                    assertion = authz[1]
         # If we didn't find it then we can't authenticate.
         if assertion is None:
             return None
@@ -246,7 +245,11 @@ class BrowserIDPlugin(object):
         # Post it to the verifier.
         try:
             resp = self.urlopen(self.verifier_url, post_data)
-            content_length = resp.info().get("Content-Length")
+            try:
+                info = resp.info()
+            except AttributeError:
+                info = {}
+            content_length = info.get("Content-Length")
             if content_length is None:
                 data = resp.read()
             else:
