@@ -144,11 +144,10 @@ class BrowserIDPlugin(object):
         headers = []
         api = get_api(environ)
         if self.rememberer_name is not None and api is not None:
-            for name, plugin in api.identifiers:
-                if name == self.rememberer_name:
-                    i_headers = plugin.remember(environ, identity)
-                    if i_headers is not None:
-                        headers.extend(i_headers)
+            plugin = api.name_registry[self.rememberer_name]
+            i_headers = plugin.remember(environ, identity)
+            if i_headers is not None:
+                headers.extend(i_headers)
         return headers
 
     def forget(self, environ, identity):
@@ -160,11 +159,10 @@ class BrowserIDPlugin(object):
         headers = []
         api = get_api(environ)
         if self.rememberer_name is not None and api is not None:
-            for name, plugin in api.identifiers:
-                if name == self.rememberer_name:
-                    i_headers = plugin.forget(environ, identity)
-                    if i_headers is not None:
-                        headers.extend(i_headers)
+            plugin = api.name_registry[self.rememberer_name]
+            i_headers = plugin.forget(environ, identity)
+            if i_headers is not None:
+                headers.extend(i_headers)
         return headers
 
     def challenge(self, environ, status, app_headers=(), forget_headers=()):
@@ -267,7 +265,7 @@ class BrowserIDPlugin(object):
         """Re-issue a failed auth challenge at the postback url."""
         if request.path == self.postback_url:
             challenge_app = self.challenge(request.environ, "401 Unauthorized")
-            environ["repoze.who.application"] = challenge_app
+            request.environ["repoze.who.application"] = challenge_app
 
     def _redirect_from_postback(self, request, identity):
         """Redirect from the postback URL after a successful authentication."""
@@ -278,7 +276,6 @@ class BrowserIDPlugin(object):
             response = Response()
             response.status = 302
             response.location = came_from
-            #response.headers.update(self.remember(request.environ, identity))
             request.environ["repoze.who.application"] = response
 
 
