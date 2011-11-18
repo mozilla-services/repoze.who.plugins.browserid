@@ -86,7 +86,7 @@ class BrowserIDPlugin(object):
 
     def __init__(self, postback_url=None, came_from_field=None,
                  challenge_body=None, rememberer_name=None, verifier_url=None,
-                 urlopen=None):
+                 urlopen=None, audience=None):
         if postback_url is None:
             postback_url = "/repoze.who.plugins.browserid.postback"
         if came_from_field is None:
@@ -103,6 +103,7 @@ class BrowserIDPlugin(object):
         self.rememberer_name = rememberer_name
         self.verifier_url = verifier_url
         self.urlopen = urlopen
+        self.audience = audience
 
     def identify(self, environ):
         """Extract BrowserID credentials from the request.
@@ -215,7 +216,7 @@ class BrowserIDPlugin(object):
             return None
         # The audience should be the submitted host.
         # Fail out if it's wrong to prevent replay of captured assertions.
-        audience = environ.get('HTTP_HOST')
+        audience = self.audience or environ.get('HTTP_HOST')
         if audience is None:
             self._rechallenge_at_postback(request)
             return None
@@ -283,7 +284,8 @@ class BrowserIDPlugin(object):
 
 
 def make_plugin(postback_url=None, came_from_field=None, challenge_body=None,
-                rememberer_name=None, verifier_url=None, urlopen=None):
+                rememberer_name=None, verifier_url=None, urlopen=None,
+                audience=None):
     """Make a BrowserIDPlugin using values from a .ini config file.
 
     This is a helper function for loading a BrowserIDPlugin via the
@@ -301,7 +303,7 @@ def make_plugin(postback_url=None, came_from_field=None, challenge_body=None,
         if urlopen is not None:
             assert callable(urlopen)
     plugin = BrowserIDPlugin(postback_url, came_from_field, challenge_body,
-                             rememberer_name, verifier_url, urlopen)
+                             rememberer_name, verifier_url, urlopen, audience)
     return plugin
 
 
