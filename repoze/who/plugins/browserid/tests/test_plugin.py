@@ -34,13 +34,20 @@
 #
 # ***** END LICENSE BLOCK *****
 
-import unittest
+import unittest2
 import urlparse
 import tempfile
 from StringIO import StringIO
 
+from zope.interface import implements
 from zope.interface.verify import verifyClass
+
 from repoze.who.interfaces import IIdentifier, IAuthenticator, IChallenger
+from repoze.who.config import WhoConfig
+from repoze.who.api import APIFactory
+from repoze.who.middleware import PluggableAuthenticationMiddleware
+
+from webtest import TestApp
 
 from repoze.who.plugins.browserid import BrowserIDPlugin, make_plugin
 from repoze.who.plugins.browserid import DEFAULT_CHALLENGE_BODY
@@ -60,16 +67,19 @@ def make_environ(**kwds):
     return environ
 
 
-def get_response(app, environ):
-    output = []
-    def start_response(status, headers, exc_info=None): # NOQA
-        output.append(status + "\r\n")
-        for name, value in headers:
-            output.append("%s: %s\r\n" % (name, value))
-        output.append("\r\n")
-    for chunk in app(environ, start_response):
-        output.append(chunk)
-    return "".join(output)
+class DummyRememberer(object):
+    """Simple rememberer plugin for testing purposes."""
+
+    implements(IIdentifier)
+
+    def identify(self, environ):
+        return None
+
+    def remember(self, environ, identity):
+        return [("X-Dummy-Remember", identity["repoze.who.userid"])]
+
+    def forget(self, environ, identity):
+        return [("X-Dummy-Remember", "")]
 
 
 def urlopen_valid(url, post_data):
@@ -89,15 +99,62 @@ def urlopen_invalid(url, post_data):
     This function provides the required urlopen interface, but always returns
     a JSON response indicating the posted assertion is invalid.
     """
-    return StringIO('{ "status": "error" }')
+    return StringIO('{ "status": "failed" }')
 
+
+WHO_CONFIG = """
+[plugin:browserid]
+use = repoze.who.plugins.browserid:make_plugin
+urlopen = repoze.who.plugins.browserid.tests.test_plugin:urlopen_valid
+rememberer_name = dummy
+
+[plugin:dummy]
+use = repoze.who.plugins.browserid.tests.test_plugin:DummyRememberer
+
+[identifiers]
+plugins = browserid dummy
+
+[authenticators]
+plugins = browserid
+
+[challengers]
+plugins = browserid
+
+[general]
+challenge_decider = repoze.who.classifiers:default_challenge_decider
+request_classifier = repoze.who.classifiers:default_request_classifier
+"""
 
 
 CHALLENGE_BODY = "CHALLENGE HO!"
 
 
-class TestBrowserIDPlugin(unittest.TestCase):
+class TestBrowserIDPlugin(unittest2.TestCase):
     """Testcases for the main BrowserIDPlugin class."""
+
+    def _make_api_factory(self):
+        parser = WhoConfig("")
+        parser.parse(WHO_CONFIG)
+        return APIFactory(parser.identifiers,
+                          parser.authenticators,
+                          parser.challengers,
+                          parser.mdproviders,
+                          parser.request_classifier,
+                          parser.challenge_decider)
+
+    def _make_wsgi_app(self):
+        parser = WhoConfig("")
+        parser.parse(WHO_CONFIG)
+        def application(environ, start_response):
+            start_response("401 Unauthorized", [])
+            return [""]
+        return PluggableAuthenticationMiddleware(application,
+                                 parser.identifiers,
+                                 parser.authenticators,
+                                 parser.challengers,
+                                 parser.mdproviders,
+                                 parser.request_classifier,
+                                 parser.challenge_decider)
 
     def test_implements(self):
         verifyClass(IIdentifier, BrowserIDPlugin)
@@ -106,17 +163,19 @@ class TestBrowserIDPlugin(unittest.TestCase):
 
     def test_make_plugin(self):
         # Test that everything can be set explicitly.
+        def ref(name):
+            return "repoze.who.plugins.browserid.tests.test_plugin:" + name
         plugin = make_plugin(
             postback_url="test_postback",
             came_from_field="u_waz_ere",
-            challenge_body="repoze.who.plugins.browserid.tests:CHALLENGE_BODY",
-            rememberer_name="remembermesoftly",
+            challenge_body=ref("CHALLENGE_BODY"),
+            rememberer_name="remember_me_softly",
             verifier_url="http://invalid.org",
-            urlopen="repoze.who.plugins.browserid.tests:urlopen_valid")
+            urlopen=ref("urlopen_valid"))
         self.assertEquals(plugin.postback_url, "test_postback")
         self.assertEquals(plugin.came_from_field, "u_waz_ere")
         self.assertEquals(plugin.challenge_body, "CHALLENGE HO!")
-        self.assertEquals(plugin.rememberer_name, "remembermesoftly")
+        self.assertEquals(plugin.rememberer_name, "remember_me_softly")
         self.assertEquals(plugin.verifier_url, "http://invalid.org")
         self.failUnless(plugin.urlopen is urlopen_valid)
         # Test that everything gets a sensible default.
@@ -207,3 +266,34 @@ class TestBrowserIDPlugin(unittest.TestCase):
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
 
+    def test_login_and_logout(self):
+        api_factory = self._make_api_factory()
+        environ = make_environ(HTTP_HOST="localhost")
+        api = api_factory(environ)
+        identity = {"browserid.assertion": "test@example.com"}
+        identity, headers = api.login(identity)
+        self.assertEquals(identity["repoze.who.userid"], "test@example.com")
+        self.assertEquals(headers[0][0], "X-Dummy-Remember")
+        self.assertEquals(headers[0][1], "test@example.com")
+        headers = api.logout()
+        self.assertEquals(headers[0][0], "X-Dummy-Remember")
+        self.assertEquals(headers[0][1], "")
+        
+    def test_challenge_and_response(self):
+        app = TestApp(self._make_wsgi_app())
+        plugin = app.app.api_factory.identifiers[0][1]
+        # With no credentials, we get the challenge page.
+        r = app.get("/", status=401)
+        self.failUnless("POST" in r.body)
+        self.failUnless(plugin.postback_url in r.body)
+        # With good credentials, we get a redirect.
+        r = app.post(plugin.postback_url,
+                     {"browserid.assertion": "test@example.com"},
+                     status=302)
+        self.assertEquals(r.headers["X-Dummy-Remember"], "test@example.com")
+        # With invalid credentials, we get the login page
+        plugin.urlopen = urlopen_invalid
+        r = app.post(plugin.postback_url,
+                     {"browserid.assertion": "test@example.com"},
+                     status=401)
+        self.failIf("X-Dummy-Remember" in r.headers)

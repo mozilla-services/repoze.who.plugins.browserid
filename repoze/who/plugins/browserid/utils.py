@@ -59,7 +59,7 @@ POSSIBLE_CACERT_FILES = ["/etc/ssl/certs/ca-certificates.crt",
 _OPENER_CACHE = {}
 
 
-def secure_urlopen(url, data=None, ca_certs=None):
+def secure_urlopen(url, data=None, timeout=None, ca_certs=None):
     """More secure replacement for urllib2.urlopen.
 
     This function provides an alternative to urllib2.urlopen which does
@@ -83,7 +83,7 @@ def secure_urlopen(url, data=None, ca_certs=None):
     except KeyError:
         opener = urllib2.build_opener(ValidatingHTTPSHandler(ca_certs))
         _OPENER_CACHE[ca_certs] = opener
-    return opener.open(url, data)
+    return opener.open(url, data, timeout)
 
 
 class ValidatingHTTPSHandler(urllib2.HTTPSHandler):
@@ -151,20 +151,20 @@ class ValidatingHTTPSConnection(httplib.HTTPSConnection):
         # Refuse to connect if there's no certificate.
         if cert is None:
             err = "no SSL certificate for %s" % (self.host,)
-            raise httplib.HTTPException(err)
+            raise socket.error(err)
         # Refuse to connect if the certificate has expired.
         if "notAfter" in cert:
             if ssl.cert_time_to_seconds(cert["notAfter"]) < now:
                 err = "expired SSL certificate for %s" % (self.host,)
-                raise httplib.HTTPException(err)
+                raise socket.error(err)
         # Refuse to connect if the certificate is missing subject data.
         if "subject" not in cert:
             err = "malformed SSL certificate for %s" % (self.host,)
-            raise httplib.HTTPException(err)
+            raise socket.error(err)
         # Try to match the certificate to the requested host.
         if not self._validate_certificate_hostname(cert):
             err = "invalid SSL certificate for %s" % (self.host,)
-            raise httplib.HTTPException(err)
+            raise socket.error(err)
 
     def _validate_certificate_hostname(self, cert):
         for rdn in cert["subject"]:
@@ -181,3 +181,4 @@ class ValidatingHTTPSConnection(httplib.HTTPSConnection):
                     elif value == "www." + self.host:
                         return True
         return False
+

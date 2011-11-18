@@ -10,7 +10,7 @@ with open(os.path.join(here, 'README.rst')) as f:
 with open(os.path.join(here, 'CHANGES.txt')) as f:
     CHANGES = f.read()
 
-requires = ['repoze.who', 'unittest2']
+requires = ['repoze.who', 'unittest2', 'webtest']
 
 setup(name='repoze.who.plugins.browserid',
       version='0.1',
