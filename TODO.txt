@@ -1,6 +1,0 @@
-
-Things to do:
-
-   * csrf protection (see https://github.com/mozilla/browserid/issues/41)
-   * local verification of assertions
-

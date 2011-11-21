@@ -35,7 +35,6 @@
 # ***** END LICENSE BLOCK *****
 
 import os
-import traceback
 import unittest2
 import threading
 import socket
@@ -44,7 +43,7 @@ import urllib2
 
 from repoze.who.plugins.browserid.utils import secure_urlopen
 
- 
+
 def _filepath(name):
     return os.path.join(os.path.dirname(__file__), name)
 
@@ -89,7 +88,7 @@ class TestingServer(object):
                 finally:
                     sock.shutdown(socket.SHUT_RDWR)
                     sock.close()
-            except Exception: 
+            except Exception:
                 pass
 
     def shutdown(self):

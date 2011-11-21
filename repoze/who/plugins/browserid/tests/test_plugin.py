@@ -99,7 +99,9 @@ def urlopen_invalid(url, post_data):
     This function provides the required urlopen interface, but always returns
     a JSON response indicating the posted assertion is invalid.
     """
-    return StringIO('{ "status": "failed" }')
+    data = StringIO('{ "status": "failed" }')
+    data.info = lambda: {"Content-Length": str(len(data.getvalue()))}
+    return data
 
 
 WHO_CONFIG = """
@@ -145,9 +147,11 @@ class TestBrowserIDPlugin(unittest2.TestCase):
     def _make_wsgi_app(self):
         parser = WhoConfig("")
         parser.parse(WHO_CONFIG)
+
         def application(environ, start_response):
             start_response("401 Unauthorized", [])
             return [""]
+
         return PluggableAuthenticationMiddleware(application,
                                  parser.identifiers,
                                  parser.authenticators,
@@ -166,27 +170,45 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         def ref(name):
             return "repoze.who.plugins.browserid.tests.test_plugin:" + name
         plugin = make_plugin(
-            postback_url="test_postback",
-            came_from_field="u_waz_ere",
-            challenge_body=ref("CHALLENGE_BODY"),
             rememberer_name="remember_me_softly",
+            postback_url="test_postback",
+            assertion_field="da_assertion_baby",
+            came_from_field="u_waz_ere",
+            csrf_field="for_your_protection",
+            csrf_cookie_name="monster",
+            challenge_body=ref("CHALLENGE_BODY"),
             verifier_url="http://invalid.org",
-            urlopen=ref("urlopen_valid"))
-        self.assertEquals(plugin.postback_url, "test_postback")
-        self.assertEquals(plugin.came_from_field, "u_waz_ere")
-        self.assertEquals(plugin.challenge_body, "CHALLENGE HO!")
+            urlopen=ref("urlopen_valid"),
+            audience="example.com",
+            check_secure="no",
+            check_referer="on")
         self.assertEquals(plugin.rememberer_name, "remember_me_softly")
+        self.assertEquals(plugin.postback_url, "test_postback")
+        self.assertEquals(plugin.assertion_field, "da_assertion_baby")
+        self.assertEquals(plugin.came_from_field, "u_waz_ere")
+        self.assertEquals(plugin.csrf_field, "for_your_protection")
+        self.assertEquals(plugin.csrf_cookie_name, "monster")
+        self.assertEquals(plugin.challenge_body, "CHALLENGE HO!")
         self.assertEquals(plugin.verifier_url, "http://invalid.org")
-        self.failUnless(plugin.urlopen is urlopen_valid)
+        self.assertEquals(plugin.urlopen, urlopen_valid)
+        self.assertEquals(plugin.audience, "example.com")
+        self.assertEquals(plugin.check_secure, False)
+        self.assertEquals(plugin.check_referer, True)
         # Test that everything gets a sensible default.
         plugin = make_plugin()
+        self.assertEquals(plugin.rememberer_name, None)
         self.assertEquals(plugin.postback_url,
                           "/repoze.who.plugins.browserid.postback")
+        self.assertEquals(plugin.assertion_field, "assertion")
         self.assertEquals(plugin.came_from_field, "came_from")
+        self.assertEquals(plugin.csrf_field, "csrf_token")
+        self.assertEquals(plugin.csrf_cookie_name, "browserid_csrf_token")
         self.assertEquals(plugin.challenge_body, DEFAULT_CHALLENGE_BODY)
-        self.assertEquals(plugin.rememberer_name, None)
-        self.assertEquals(plugin.verifier_url, "https://browserid.org/verify")
-        self.failUnless(plugin.urlopen is secure_urlopen)
+        self.assertEquals(plugin.verifier_url, None)
+        self.assertEquals(plugin.urlopen, None)
+        self.assertEquals(plugin.audience, None)
+        self.assertEquals(plugin.check_secure, None)
+        self.assertEquals(plugin.check_referer, None)
         # Test that challenge body can be read from a file.
         with tempfile.NamedTemporaryFile() as f:
             f.write("CHALLENGE IN A FILE!")
@@ -200,31 +222,11 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         identity = plugin.identify(environ)
         self.assertEquals(identity, None)
 
-    def test_identify_with_authz_header(self):
-        plugin = BrowserIDPlugin()
-        authz = "BrowserID test@example.com"
-        environ = make_environ(HTTP_AUTHORIZATION=authz)
-        identity = plugin.identify(environ)
-        self.assertEquals(identity["browserid.assertion"], "test@example.com")
-
-    def test_identify_with_invalid_authz_header(self):
-        plugin = BrowserIDPlugin()
-        authz = "SomeOtherScheme test@example.com"
-        environ = make_environ(HTTP_AUTHORIZATION=authz)
-        identity = plugin.identify(environ)
-        self.assertEquals(identity, None)
-
-    def test_identify_with_GET_vars(self):
-        plugin = BrowserIDPlugin()
-        qs = "browserid.assertion=test@example.com"
-        environ = make_environ(QUERY_STRING=qs)
-        identity = plugin.identify(environ)
-        self.assertEquals(identity["browserid.assertion"], "test@example.com")
-
     def test_identify_with_POST_vars(self):
         plugin = BrowserIDPlugin()
-        body = "browserid.assertion=test@example.com"
+        body = "assertion=test@example.com&csrf_token=123456"
         environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
                                CONTENT_LENGTH=len(body))
         environ["wsgi.input"] = StringIO(body)
         identity = plugin.identify(environ)
@@ -232,11 +234,41 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(identity, None)
         # This works since we're at the postback url.
         environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
                                CONTENT_LENGTH=len(body),
                                PATH_INFO=plugin.postback_url)
         environ["wsgi.input"] = StringIO(body)
         identity = plugin.identify(environ)
         self.assertEquals(identity["browserid.assertion"], "test@example.com")
+
+    def test_identify_with_bad_csrf(self):
+        plugin = BrowserIDPlugin()
+        body = "assertion=test@example.com&csrf_token=987654"
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+
+    def test_identify_with_missing_referer(self):
+        plugin = BrowserIDPlugin()
+        body = "assertion=test@example.com&csrf_token=123456"
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               HTTP_REFERER="http://evil.com/attackpage",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        # By default we don't check referer for http connections.
+        environ["wsgi.url_scheme"] = "http"
+        identity = plugin.identify(environ)
+        self.assertEquals(identity["browserid.assertion"], "test@example.com")
+        # But we do check them for https connections.
+        environ["wsgi.url_scheme"] = "https"
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
 
     def test_auth_with_no_assertion(self):
         plugin = BrowserIDPlugin(urlopen=urlopen_valid)
@@ -278,7 +310,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         headers = api.logout()
         self.assertEquals(headers[0][0], "X-Dummy-Remember")
         self.assertEquals(headers[0][1], "")
-        
+
     def test_challenge_and_response(self):
         app = TestApp(self._make_wsgi_app())
         plugin = app.app.api_factory.identifiers[0][1]
@@ -287,13 +319,11 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.failUnless("POST" in r.body)
         self.failUnless(plugin.postback_url in r.body)
         # With good credentials, we get a redirect.
-        r = app.post(plugin.postback_url,
-                     {"browserid.assertion": "test@example.com"},
-                     status=302)
+        credentials = {"assertion": "test@example.com"}
+        credentials["csrf_token"] = r.cookies_set["browserid_csrf_token"]
+        r = app.post(plugin.postback_url, credentials, status=302)
         self.assertEquals(r.headers["X-Dummy-Remember"], "test@example.com")
         # With invalid credentials, we get the login page
         plugin.urlopen = urlopen_invalid
-        r = app.post(plugin.postback_url,
-                     {"browserid.assertion": "test@example.com"},
-                     status=401)
+        r = app.post(plugin.postback_url, credentials, status=401)
         self.failIf("X-Dummy-Remember" in r.headers)

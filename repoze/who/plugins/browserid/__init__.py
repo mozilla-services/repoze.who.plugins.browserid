@@ -41,8 +41,9 @@ A repoze.who plugin for authentication via BrowserID:
 
 """
 
-import json
+import os
 import wsgiref.util
+from urlparse import urlparse, urljoin
 
 from zope.interface import implements
 
@@ -52,7 +53,7 @@ from repoze.who.interfaces import IIdentifier, IAuthenticator, IChallenger
 from repoze.who.api import get_api
 from repoze.who.utils import resolveDotted
 
-from repoze.who.plugins.browserid.utils import secure_urlopen
+from repoze.who.plugins.browserid.utils import str2bool, verify_assertion
 
 
 class BrowserIDPlugin(object):
@@ -64,76 +65,125 @@ class BrowserIDPlugin(object):
 
         https://browserid.org/
 
-    When used as an IIdentifier, it will extract a BrowserID assertion from
-    the query-string, POST body or HTTP Authorization header.  The returned
-    identity will contain the assertion under the key "browserid.assertion".
+    When used as an IIdentifier, it will process POST requests to a configured
+    URL as attempts to log in using BrowserID.  The identity extracted from
+    such requests will contain the key "browserid.assertion" giving the
+    (unverified) identity assertion.
 
-    When used as an IAuthenticator, it will verifiy a BrowserID assertion
-    by POSTing it to the browserid.org verifier service.  If successfully
-    verified, the asserted email address is returned as the userid.
+    When used as an IAuthenticator, it will verifiy an extracted BrowserID
+    assertion by POSTing it to the browserid.org verifier service.  If valid
+    then the asserted email address is returned as the userid.
 
     When used as an IChallenger, it will send a HTML page with the necessary
-    embedded javascript to trigger a BrowserID prompt and send the assertion
-    back to the server.
-
-    When talking to the remote verifier service, this class does strict SSL
-    certificate checking by default.  You can customize the process by
-    providing a "urlopen" callback that has the same interface as the function
-    of that name from urllib2.
+    embedded javascript to trigger a BrowserID prompt and POST the assertion
+    back to the server for checking.
     """
 
     implements(IIdentifier, IChallenger, IAuthenticator)
 
-    def __init__(self, postback_url=None, came_from_field=None,
-                 challenge_body=None, rememberer_name=None, verifier_url=None,
-                 urlopen=None, audience=None):
+    def __init__(self, rememberer_name=None, postback_url=None,
+                 assertion_field=None, came_from_field=None, csrf_field=None,
+                 csrf_cookie_name=None, challenge_body=None, verifier_url=None,
+                 urlopen=None, audience=None, check_secure=None,
+                 check_referer=None):
         if postback_url is None:
             postback_url = "/repoze.who.plugins.browserid.postback"
+        if assertion_field is None:
+            assertion_field = "assertion"
         if came_from_field is None:
             came_from_field = "came_from"
+        if csrf_field is None:
+            csrf_field = "csrf_token"
+        if csrf_cookie_name is None:
+            csrf_cookie_name = "browserid_csrf_token"
         if challenge_body is None:
             challenge_body = DEFAULT_CHALLENGE_BODY
-        if verifier_url is None:
-            verifier_url = "https://browserid.org/verify"
-        if urlopen is None:
-            urlopen = secure_urlopen
-        self.postback_url = postback_url
-        self.came_from_field = came_from_field
-        self.challenge_body = challenge_body
         self.rememberer_name = rememberer_name
+        self.postback_url = postback_url
+        self.postback_path = urlparse(postback_url).path
+        self.assertion_field = assertion_field
+        self.came_from_field = came_from_field
+        self.csrf_field = csrf_field
+        self.csrf_cookie_name = csrf_cookie_name
+        self.challenge_body = challenge_body
         self.verifier_url = verifier_url
         self.urlopen = urlopen
         self.audience = audience
+        self.check_secure = check_secure
+        self.check_referer = check_referer
 
     def identify(self, environ):
         """Extract BrowserID credentials from the request.
 
-        This method extracts a BrowserID assertion from the request, either
-        from the query-string, POST body or HTTP Authorization header.  If
-        found, the returned identity will map the key "browserid.assertion"
-        to the (unverified) assertion string.
+        This method checks whether the request is to the configured postback
+        URL, and if so extracts a BrowserID assertion from the POST data.
+        The returned identity then maps the key "browserid.assertion" to the
+        unverified assertion string.
+
+        This method is also responsible for CSRF protection.  If the request
+        does not contain the necessary CSRF tokens then no identity will be
+        returned.
         """
         request = Request(environ)
-        assertion = None
-        # If we're at the postback url, look in the POST vars.
-        if request.path == self.postback_url and request.method == "POST":
-            assertion = request.POST.get("browserid.assertion")
-        # Otherwise, we might have the assertion in the GET vars.
-        if assertion is None:
-            assertion = request.GET.get("browserid.assertion")
-        # Or we might have it in the Authorization header.
-        if assertion is None:
-            authz = request.authorization
-            if authz is not None:
-                if authz[0].lower() == "browserid":
-                    assertion = authz[1]
-        # If we didn't find it then we can't authenticate.
+        # If we're not at the postback url then don't process the login.
+        if request.path != self.postback_path or request.method != "POST":
+            return None
+        # If this might be a CSRF attack, fail out.
+        if not self._check_request_integrity(request):
+            return None
+        # Find the assertion in the POST vars.
+        assertion = request.POST.get(self.assertion_field)
         if assertion is None:
             return None
-        # The assertion is all we need for an identity.
-        identity = {}
-        identity["browserid.assertion"] = assertion
+        # That's all we need for an identity.
+        identity = {"browserid.assertion": assertion}
         return identity
+
+    def _check_request_integrity(self, request):
+        """Check the integrity of the request against CSRF attacks."""
+        if self.check_secure:
+            if request.environ["wsgi.url_scheme"] != "https":
+                return False
+        if not self._check_request_referer(request):
+            return False
+        if not self._check_request_csrf_token(request):
+            return False
+        return True
+
+    def _check_request_referer(self, request):
+        """Check if the request has a referer of the same origin.
+
+        If the "check_referer" setting is True, this method checks that the
+        incoming request has a HTTP Referer header from the same origin as the
+        request itself.  This ensures some measure of protection against CSRF
+        attacks.
+        """
+        check_referer = self.check_referer
+        if check_referer is None:
+            check_referer = (request.environ["wsgi.url_scheme"] == "https")
+        if check_referer:
+            if request.referer is None:
+                return False
+            referer = urljoin(request.host_url, request.referer)
+            if urlparse(referer)[:2] != urlparse(request.host_url)[:2]:
+                return False
+        return True
+
+    def _check_request_csrf_token(self, request):
+        """Check if the request has a valid CSRF-protection token.
+
+        When CSRF protection is enabled, any incoming login attempts much
+        provide a matching token in two places: the cookie headers and the
+        request parameters.  This is "session-independent nonce" technique
+        described by Barth et. al.
+        """
+        if self.csrf_cookie_name and self.csrf_field:
+            csrf_token = request.cookies.get(self.csrf_cookie_name, None)
+            if not csrf_token:
+                return False
+            if csrf_token != request.params.get(self.csrf_field, None):
+                return False
+        return True
 
     def remember(self, environ, identity):
         """Remember the authenticated identity.
@@ -175,22 +225,32 @@ class BrowserIDPlugin(object):
         """
         def challenge_app(environ, start_response):
             request = Request(environ)
+            headers = list(forget_headers)
+            # Get the postback url as a full URL including host and scheme.
+            postback_url = urljoin(request.host_url, self.postback_url)
+            postback_url_p = urlparse(postback_url)
             # Preserve the "came_from" variable across page loads.
             request_uri = wsgiref.util.request_uri(environ)
             came_from = request.params.get("came_from", request_uri)
-            # Always include a WWW-Authenticate BrowserID challenge,
-            # to accomodate any non-browser clients that can't do JS.
-            realm = environ.get("HTTP_HOST", "")
-            challenge = "BrowserID realm=\"%s\"" % (realm,)
-            headers = list(forget_headers)
-            headers.append(('WWW-Authenticate', challenge))
+            # Send a random CSRF token in a cookie.
+            # Try to limit things so it's only sent to the postback url.
+            csrf_token = os.urandom(16).encode("hex")
+            cookie = "%s=%s; HttpOnly" % (self.csrf_cookie_name, csrf_token)
+            cookie += "; Domain=" + postback_url_p.hostname
+            cookie += "; Path=" + postback_url_p.path
+            if postback_url_p.scheme == "https:":
+                cookie += "; Secure"
+            headers.append(('Set-Cookie', cookie))
             # Interpolate various request data into the challenge body.
             challenge_vars = {}
-            challenge_vars["postback_url"] = self.postback_url
+            challenge_vars["postback_url"] = postback_url
+            challenge_vars["assertion_field"] = self.assertion_field
             challenge_vars["came_from_field"] = self.came_from_field
+            challenge_vars["csrf_field"] = self.csrf_field
             challenge_vars["came_from"] = came_from
             challenge_vars["request_uri"] = request_uri
             challenge_vars["request_method"] = environ.get("REQUEST_METHOD")
+            challenge_vars["csrf_token"] = csrf_token
             challenge_body = self.challenge_body % challenge_vars
             # Send the challenge page as text/html.
             headers.append(("Content-Type", "text/html"))
@@ -214,8 +274,8 @@ class BrowserIDPlugin(object):
         if assertion is None:
             self._rechallenge_at_postback(request)
             return None
-        # The audience should be the submitted host.
-        # Fail out if it's wrong to prevent replay of captured assertions.
+        # The audience defaults to the submitted host.
+        # Fail if it doesn't match, to prevent replay of captured assertions.
         audience = self.audience or environ.get('HTTP_HOST')
         if audience is None:
             self._rechallenge_at_postback(request)
@@ -232,48 +292,19 @@ class BrowserIDPlugin(object):
         return userid
 
     def _verify_assertion(self, assertion, audience):
-        """Verify the given BrowserID assertion/audience pair.
-
-        This method verifies the signatures in the given BrowserID assertion,
-        checks that is intended for the specified audience, and returns a
-        dict giving the information contained in the assertion.
-
-        Currently this POSTs the assertion to an external verifier service.
-        """
-        # Encode the data into x-www-form-urlencoded.
-        post_data = {"assertion": assertion, "audience": audience}
-        post_data = "&".join("%s=%s" % item for item in post_data.items())
-        # Post it to the verifier.
-        try:
-            resp = self.urlopen(self.verifier_url, post_data)
-            try:
-                info = resp.info()
-            except AttributeError:
-                info = {}
-            content_length = info.get("Content-Length")
-            if content_length is None:
-                data = resp.read()
-            else:
-                data = resp.read(int(content_length))
-        except IOError:
-            return None
-        # Did it come back clean?
-        data = json.loads(data)
-        if data.get('status') != "okay":
-            return None
-        if data.get('audience') != audience:
-            return None
-        return data
+        return verify_assertion(assertion, audience,
+                                urlopen=self.urlopen,
+                                verifier_url=self.verifier_url)
 
     def _rechallenge_at_postback(self, request):
         """Re-issue a failed auth challenge at the postback url."""
-        if request.path == self.postback_url:
+        if request.path == self.postback_path:
             challenge_app = self.challenge(request.environ, "401 Unauthorized")
             request.environ["repoze.who.application"] = challenge_app
 
     def _redirect_from_postback(self, request, identity):
         """Redirect from the postback URL after a successful authentication."""
-        if request.path == self.postback_url:
+        if request.path == self.postback_path:
             came_from = request.params.get(self.came_from_field)
             if came_from is None:
                 came_from = request.referer or "/"
@@ -283,9 +314,10 @@ class BrowserIDPlugin(object):
             request.environ["repoze.who.application"] = response
 
 
-def make_plugin(postback_url=None, came_from_field=None, challenge_body=None,
-                rememberer_name=None, verifier_url=None, urlopen=None,
-                audience=None):
+def make_plugin(rememberer_name=None, postback_url=None, assertion_field=None,
+                came_from_field=None, csrf_field=None, csrf_cookie_name=None,
+                challenge_body=None, verifier_url=None, urlopen=None,
+                audience=None, check_secure=None, check_referer=None):
     """Make a BrowserIDPlugin using values from a .ini config file.
 
     This is a helper function for loading a BrowserIDPlugin via the
@@ -302,8 +334,14 @@ def make_plugin(postback_url=None, came_from_field=None, challenge_body=None,
         urlopen = resolveDotted(urlopen)
         if urlopen is not None:
             assert callable(urlopen)
-    plugin = BrowserIDPlugin(postback_url, came_from_field, challenge_body,
-                             rememberer_name, verifier_url, urlopen, audience)
+    if isinstance(check_secure, basestring):
+        check_secure = str2bool(check_secure)
+    if isinstance(check_referer, basestring):
+        check_referer = str2bool(check_referer)
+    plugin = BrowserIDPlugin(rememberer_name, postback_url, assertion_field,
+                             came_from_field, csrf_field, csrf_cookie_name,
+                             challenge_body, verifier_url, urlopen, audience,
+                             check_secure, check_referer)
     return plugin
 
 
@@ -341,11 +379,14 @@ $(function() {
                 var $form = $("<form method=POST "+
                               "      action='%(postback_url)s'>" +
                               "  <input type='hidden' " +
-                              "         name='browserid.assertion' " +
+                              "         name='%(assertion_field)s' " +
                               "         value='" + assertion + "' />" +
                               "  <input type='hidden' " +
                               "         name='%(came_from_field)s' "+
                               "         value='%(came_from)s' />" +
+                              "  <input type='hidden' " +
+                              "         name='%(csrf_field)s' "+
+                              "         value='%(csrf_token)s' />" +
                               "</form>").appendTo($("body"));
                 $form.submit();
             }

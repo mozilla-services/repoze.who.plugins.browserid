@@ -13,15 +13,15 @@ with open(os.path.join(here, 'CHANGES.txt')) as f:
 requires = ['repoze.who >= 2.0', 'unittest2', 'webtest']
 
 setup(name='repoze.who.plugins.browserid',
-      version='0.1',
+      version='0.1.0',
       description='repoze.who.plugins.browserid',
       long_description=README + '\n\n' + CHANGES,
       classifiers=[
         "Programming Language :: Python",
         ],
-      author='',
-      author_email='',
-      url='',
+      author='Mozilla Services',
+      author_email='services-dev@mozilla.org',
+      url='https://github.com/mozilla-services/repoze.who.plugins.browserid',
       keywords='authentication repoze browserid',
       packages=find_packages(),
       include_package_data=True,

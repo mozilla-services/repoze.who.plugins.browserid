@@ -42,10 +42,63 @@ Helper functions for repoze.who.plugins.browserid.
 import os
 import ssl
 import time
+import json
 import socket
 import httplib
 import urllib2
 from fnmatch import fnmatch
+
+
+BROWSERID_VERIFIER_URL = "https://browserid.org/verify"
+
+
+def verify_assertion(assertion, audience, verifier_url=None, urlopen=None):
+    """Verify the given BrowserID assertion.
+
+    This function submits the given assertion and audience to the BrowserID
+    verifier service.  If valid then it returns the dict of identity info
+    from the assertion; if invalid then None is returned.
+
+    Eventually this might learn how to do local verification.
+    """
+    if verifier_url is None:
+        verifier_url = BROWSERID_VERIFIER_URL
+    if urlopen is None:
+        urlopen = secure_urlopen
+    # Encode the data into x-www-form-urlencoded.
+    post_data = {"assertion": assertion, "audience": audience}
+    post_data = "&".join("%s=%s" % item for item in post_data.items())
+    # Post it to the verifier.
+    try:
+        resp = urlopen(verifier_url, post_data)
+        try:
+            info = resp.info()
+        except AttributeError:
+            info = {}
+        content_length = info.get("Content-Length")
+        if content_length is None:
+            data = resp.read()
+        else:
+            data = resp.read(int(content_length))
+        data = json.loads(data)
+    except (ValueError, IOError):
+        return None
+    # Did it come back clean?
+    if data.get('status') != "okay":
+        return None
+    if data.get('audience') != audience:
+        return None
+    return data
+
+
+def str2bool(value):
+    """Convert a text string value to a boolean True or False."""
+    lvalue = value.lower()
+    if lvalue in ("1", "yes", "on", "true"):
+        return True
+    if lvalue in ("0", "no", "off", "false"):
+        return False
+    raise ValueError("Not a boolean value: %r" % (value,))
 
 
 # When using secure_urlopen we search for the platform default ca-cert file.
@@ -181,4 +234,3 @@ class ValidatingHTTPSConnection(httplib.HTTPSConnection):
                     elif value == "www." + self.host:
                         return True
         return False
-
