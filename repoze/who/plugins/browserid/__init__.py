@@ -235,7 +235,7 @@ class BrowserIDPlugin(object):
             cookie = "%s=%s; HttpOnly" % (self.csrf_cookie_name, csrf_token)
             cookie += "; Domain=" + postback_url_p.hostname
             cookie += "; Path=" + postback_url_p.path
-            if postback_url_p.scheme == "https:":
+            if postback_url_p.scheme == "https":
                 cookie += "; Secure"
             headers.append(('Set-Cookie', cookie))
             # Interpolate various request data into the challenge body.

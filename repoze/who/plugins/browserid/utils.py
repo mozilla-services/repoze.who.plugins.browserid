@@ -125,8 +125,7 @@ def verify_assertion(assertion, audience, verifier_url=None, urlopen=None):
     # Did it come back clean?
     if data.get('status') != "okay":
         return None
-    if data.get('audience') != audience:
-        return None
+    assert data.get('audience') == audience
     return data
 
 
@@ -154,7 +153,7 @@ def parse_assertion(assertion):
         # Get the audience out of the assertion token.
         info["audience"] = parse_jwt(assertion)["aud"]
     except (TypeError, KeyError), e:
-        raise ValueError(e.message)
+        raise ValueError(str(e))
     return info
 
 

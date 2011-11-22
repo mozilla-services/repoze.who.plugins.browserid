@@ -235,6 +235,9 @@ class TestBrowserIDPlugin(unittest2.TestCase):
             f.flush()
             plugin = make_plugin("www.mysite.com", challenge_body=f.name)
             self.assertEquals(plugin.challenge_body, "CHALLENGE IN A FILE!")
+        # Test that empty audiences string goes to None.
+        plugin = make_plugin("")
+        self.assertEquals(plugin.audiences, None)
 
     def test_identify_with_no_credentials(self):
         plugin = BrowserIDPlugin(None)
@@ -262,6 +265,69 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         identity = plugin.identify(environ)
         self.assertEquals(identity["browserid.assertion"], assertion)
 
+    def test_identify_with_GET_vars(self):
+        plugin = BrowserIDPlugin(["localhost"])
+        assertion = make_fake_assertion("test@example.com")
+        query_string = "/?assertion=%s&csrf_token=123456" % (assertion,)
+        environ = make_environ(REQUEST_METHOD="GET",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               PATH_INFO=plugin.postback_url,
+                               QUERY_STRING = query_string)
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+
+    def test_identify_with_no_assertion(self):
+        plugin = BrowserIDPlugin(["localhost"])
+        assertion = make_fake_assertion("test@example.com")
+        body = "csrf_token=123456"
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "No BrowserID assertion found")
+
+    def test_identify_with_required_https(self):
+        plugin = BrowserIDPlugin(["localhost"], check_https=True,
+                                                check_referer=False)
+        assertion = make_fake_assertion("test@example.com")
+        body = "assertion=%s&csrf_token=123456" % (assertion,)
+        # This one fails due to not being over https.
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "Login requests must use a secure connection")
+        # This one still works OK.
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        environ["wsgi.url_scheme"] = "https"
+        identity = plugin.identify(environ)
+        self.assertEquals(identity["browserid.assertion"], assertion)
+
+    def test_identify_with_malformed_assertion(self):
+        plugin = BrowserIDPlugin(["localhost"])
+        body = "assertion=%s&csrf_token=123456" % ("JUNK",)
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "Malformed BrowserID assertion")
+
     def test_identify_with_bad_csrf(self):
         plugin = BrowserIDPlugin(None)
         assertion = make_fake_assertion("test@example.com")
@@ -274,13 +340,43 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         identity = plugin.identify(environ)
         self.assertEquals(identity, None)
 
-    def test_identify_with_missing_referer(self):
+    def test_identify_with_missing_csrf(self):
+        plugin = BrowserIDPlugin(None)
+        assertion = make_fake_assertion("test@example.com")
+        body = "assertion=%s&csrf_token=987654" % (assertion,)
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+
+    def test_identify_with_invalid_referer(self):
         plugin = BrowserIDPlugin(["localhost"])
         assertion = make_fake_assertion("test@example.com")
         body = "assertion=%s&csrf_token=123456" % (assertion,)
         environ = make_environ(REQUEST_METHOD="POST",
                                HTTP_COOKIE="browserid_csrf_token=123456",
                                HTTP_REFERER="http://evil.com/attackpage",
+                               CONTENT_LENGTH=len(body),
+                               PATH_INFO=plugin.postback_url)
+        environ["wsgi.input"] = StringIO(body)
+        # By default we don't check referer for http connections.
+        environ["wsgi.url_scheme"] = "http"
+        identity = plugin.identify(environ)
+        self.assertEquals(identity["browserid.assertion"], assertion)
+        # But we do check them for https connections.
+        environ["wsgi.url_scheme"] = "https"
+        identity = plugin.identify(environ)
+        self.assertEquals(identity, None)
+
+    def test_identify_with_missing_referer(self):
+        plugin = BrowserIDPlugin(["localhost"])
+        assertion = make_fake_assertion("test@example.com")
+        body = "assertion=%s&csrf_token=123456" % (assertion,)
+        environ = make_environ(REQUEST_METHOD="POST",
+                               HTTP_COOKIE="browserid_csrf_token=123456",
                                CONTENT_LENGTH=len(body),
                                PATH_INFO=plugin.postback_url)
         environ["wsgi.input"] = StringIO(body)
@@ -302,9 +398,19 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
                           "No BrowserID assertion found")
 
-    def test_auth_with_no_audience(self):
+    def test_auth_with_mismatched_audience(self):
         plugin = BrowserIDPlugin(None, urlopen=urlopen_valid)
-        environ = make_environ()
+        environ = make_environ(HTTP_HOST="GOOD")
+        assertion = make_fake_assertion("test@example.com", "BAD")
+        identity = {"browserid.assertion": assertion}
+        userid = plugin.authenticate(environ, identity)
+        self.assertEquals(userid, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "The audience \"BAD\" is not recognised")
+
+    def test_auth_with_unrecognised_audience(self):
+        plugin = BrowserIDPlugin(["GOOD"], urlopen=urlopen_valid)
+        environ = make_environ(HTTP_HOST="BAD")
         assertion = make_fake_assertion("test@example.com", "BAD")
         identity = {"browserid.assertion": assertion}
         userid = plugin.authenticate(environ, identity)
@@ -320,13 +426,24 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, "test@example.com")
 
-    def test_auth_with_bad_assertion(self):
+    def test_auth_with_invalid_assertion(self):
         plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_invalid)
         environ = make_environ()
         assertion = make_fake_assertion("test@example.com")
         identity = {"browserid.assertion": assertion}
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "Invalid BrowserID assertion")
+
+    def test_auth_with_malformed_assertion(self):
+        plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_invalid)
+        environ = make_environ()
+        identity = {"browserid.assertion": "JUNK"}
+        userid = plugin.authenticate(environ, identity)
+        self.assertEquals(userid, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "Malformed BrowserID assertion")
 
     def test_login_and_logout(self):
         api_factory = self._make_api_factory()
@@ -359,3 +476,13 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         plugin.urlopen = urlopen_invalid
         r = app.post(plugin.postback_url, credentials, status=401)
         self.failIf("X-Dummy-Remember" in r.headers)
+
+    def test_challenge_gets_secure_cookie_over_https(self):
+        app = TestApp(self._make_wsgi_app())
+        plugin = app.app.api_factory.identifiers[0][1]
+        # With no credentials, we get the challenge page.
+        extra_environ = {"HTTP_HOST":"localhost", "wsgi.url_scheme":"https"}
+        r = app.get("/", status=401, extra_environ=extra_environ)
+        self.failUnless("POST" in r.body)
+        self.failUnless(plugin.postback_url in r.body)
+        self.failUnless("Secure" in r.headers['Set-Cookie'])
