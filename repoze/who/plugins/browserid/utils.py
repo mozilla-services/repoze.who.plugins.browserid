@@ -43,13 +43,52 @@ import os
 import ssl
 import time
 import json
+import base64
 import socket
 import httplib
 import urllib2
+from urlparse import urlparse
 from fnmatch import fnmatch
 
 
 BROWSERID_VERIFIER_URL = "https://browserid.org/verify"
+
+
+def check_url_origin(origin, url):
+    """Check that the origin of the given URL matches the expected value.
+
+    This function allows you to check whether a URL comes from the same origin
+    as some canonical URL, which is useful for enforcing various same-origin
+    security checks::
+
+        >>> check_url_origin("http://mysite.com", "http://mysite.com/test1")
+        True
+        >>> check_url_origin("http://mysite.com", "http://evil.com/test1")
+        False
+
+    """
+    origin_p = urlparse(origin)
+    url_p = urlparse(url)
+    # They must use the same protocol.
+    if origin_p.scheme != url_p.scheme:
+        return False
+    # They must be at the same host.
+    if origin_p.hostname != url_p.hostname:
+        return False
+    # They must be on the same port, taking standard ports into account.
+    STANDARD_PORTS = {"http": 80, "https": 443}
+    if origin_p.port:
+        origin_port = origin_p.port
+    else:
+        origin_port = STANDARD_PORTS.get(origin_p.scheme, None)
+    if url_p.port:
+        url_port = url_p.port
+    else:
+        url_port = STANDARD_PORTS.get(url_p.scheme, None)
+    if origin_port != url_port:
+        return False
+    # OK, looks good.
+    return True
 
 
 def verify_assertion(assertion, audience, verifier_url=None, urlopen=None):
@@ -89,6 +128,63 @@ def verify_assertion(assertion, audience, verifier_url=None, urlopen=None):
     if data.get('audience') != audience:
         return None
     return data
+
+
+def parse_assertion(assertion):
+    """Parse interesting information out of a BrowserID assertion.
+
+    This function decodes and parses the given BrowserID assertion, returning
+    a dict with the following items:
+
+       * principal:  the asserted identity, eg: {"email": "test@example.com"}
+       * audience:   the audience to whom it is asserted
+
+    This does *not* verify the assertion at all, it is merely a way to see
+    the information that is being asserted.  If the assertion is malformed
+    then ValueError will be raised.
+    """
+    info = {}
+    # Decode the bundled-assertion envelope.
+    try:
+        data = json.loads(decode_urlb64(assertion))
+        certificates = data["certificates"]
+        assertion = data["assertion"]
+        # Get the asserted principal out of the certificate chain.
+        info["principal"] = parse_jwt(certificates[0])["principal"]
+        # Get the audience out of the assertion token.
+        info["audience"] = parse_jwt(assertion)["aud"]
+    except (TypeError, KeyError), e:
+        raise ValueError(e.message)
+    return info
+
+
+def parse_jwt(token):
+    """Parse a JWT to get the contained information.
+
+    This function parses a JSON Web Token and returns the contained dict of
+    information.  It does not validate the signature.
+    """
+    payload = token.split(".")[1]
+    return json.loads(decode_urlb64(payload))
+
+
+def decode_urlb64(value):
+    """Decode BrowserID's base64 encoding format.
+
+    BrowserID likes to strip padding characters off of base64-encoded strings,
+    meaning we can't use the stdlib routines to decode them directly.  This
+    is a simple wrapper that adds the padding back in.
+    """
+    if isinstance(value, unicode):
+        value = value.encode("ascii")
+    pad = len(value) % 4
+    if pad == 2:
+        value += "=="
+    elif pad == 3:
+        value += "="
+    elif pad != 0:
+        raise ValueError("incorrect b64 encoding")
+    return base64.urlsafe_b64decode(value)
 
 
 def str2bool(value):

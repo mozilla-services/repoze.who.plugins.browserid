@@ -15,6 +15,7 @@ file like so::
 
     [plugin:browserid]
     use = repoze.who.plugins.browserid:make_plugin
+    audiences = www.mysite.com
     rememberer_name = authtkt
 
     [plugin:authtkt]
@@ -37,8 +38,67 @@ so that it can remember the user's login across requests.
 Customization
 =============
 
+The following settings can be specified in the configuration file to customize
+the behaviour of the plugin:
 
-TODO: fill this in.
+  :audiences:   A space-separated list of acceptable hostnames or glob patterns
+                for the BrowserID assertion audience.  Any assertion whose
+                audience does not match an item in the list will be rejected.
+
+                You must specify a value for this setting, since it is integral
+                to the security of BrowserID.  See the "security notes" section
+                below for more details.
+               
+  :rememberer_name:    The name of another repoze.who plugin which should be
+                       called to remember/forget the authentication.  This 
+                       would typically be a signed-cookie implementation such
+                       as the built-in auth_tkt plugin.  If unspecificed or 
+                       None then authentication will not be remembered.
+
+  :postback_url:    The URL to which BrowserID credentials should be sent
+                    for validation.  The default value is hopefully conflict
+                    free: /repoze.who.plugins.browserid.postback
+
+  :assertion_field:   The name of the POST form field in which to find the
+                      BrowserID assertion.  The default value is "assertion".
+
+  :came_from_field:   The name of the POST form field in which to find the
+                      referring page, to which the user will be redirected
+                      after processing their login.  The default value is
+                      "came_from".
+
+  :csrf_field:   The name of the POST form field in which to find the CSRF
+                 protection token.  The default value is "csrf_token".  If
+                 set to the empty string then CSRF checking is disabled.
+
+  :csrf_cookie_name:   The name of the cookie in which to set and find the
+                       CSRF protection token.  The default cookie name is
+                       "browserid_csrf_token".  If set to the empty string
+                       then CSRF checking is disabled.
+
+  :challenge_body:   The location at which to find the HTML for the login
+                     page, either as a dotted python reference or a filename.
+                     The contained HTML may use python string interpolation
+                     syntax to include details of the challenge, e.g. use
+                     %(csrf_token)s to include the CSRF token.
+ 
+  :verifier_url:   The URL of the BrowserID verifier service, to which all
+                   assertions will be posted for checking.  The default value
+                   is the standard browserid.org verifier and should be
+                   suitable for all purposes.
+
+  :urlopen:   The dotted python name of a callable implementing the same API
+              as urllib.urlopen, which will be used to access the BrowserID
+              verifier service.  The default value utils:secure_urlopen which
+              does strict HTTPS certificate checking by default.
+
+  :check_https:   Boolean indicating whether to reject login attempts over
+                  enencrypted connections.  The default value is False.
+
+  :check_referer:   Boolean indicating whether to reject login attempts where
+                    the referer header does not match the expected audience.
+                    The default is to perform this check for secure connections
+                    only.
 
 
 Security Notes
@@ -56,7 +116,7 @@ Request Forgery":
 In the terminology of the above paper, it combines a session-independent
 nonce with strict referer checking for secure connections.  You can tweak
 the protection by adjusting the "csrf_cookie_name", "check_referer" and
-"check_secure" settings.
+"check_https" settings.
 
 
 Audience Checking
@@ -64,9 +124,25 @@ Audience Checking
 
 BrowserID uses the notion of an "audience" to protect against stolen logins.
 The audience ties a BrowserID assertion to a specific host, so that an 
-attacker can't collect assertions on one site and use them to log in to
+attacker can't collect assertions on one site and then use them to log in to
 another.
 
-This plugin performs strict audience checking by default.  You can provide
-a specific audience string when creating the plugin, but there is no option to
-disable these checks.
+This plugin performs strict audience checking by default.  You must provide
+a list of acceptable audience string when creating the plugin, and they should
+be specific to your application.  For example, if your application serves
+requests on three different hostnames http://mysite.com, http://www.mysite.com
+and http://uploads.mysite.com, you might provide::
+
+    [plugin:browserid]
+    use = repoze.who.plugins.browserid:make_plugin
+    audiences = mysite.com *.mysite.com
+
+If your application does strict checking of the HTTP Host header, then you can
+instruct the plugin to use the Host header as the audience by leaving the list
+blank::
+
+    [plugin:browserid]
+    use = repoze.who.plugins.browserid:make_plugin
+    audiences =
+
+This is not the default behaviour since it may be insecure on some systems.

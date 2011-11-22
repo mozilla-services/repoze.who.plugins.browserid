@@ -37,6 +37,8 @@
 import unittest2
 import urlparse
 import tempfile
+import base64
+import json
 from StringIO import StringIO
 
 from zope.interface import implements
@@ -49,9 +51,11 @@ from repoze.who.middleware import PluggableAuthenticationMiddleware
 
 from webtest import TestApp
 
-from repoze.who.plugins.browserid import BrowserIDPlugin, make_plugin
-from repoze.who.plugins.browserid import DEFAULT_CHALLENGE_BODY
-from repoze.who.plugins.browserid.utils import secure_urlopen
+from repoze.who.plugins.browserid.utils import secure_urlopen, parse_assertion
+from repoze.who.plugins.browserid import (BrowserIDPlugin,
+                                          make_plugin,
+                                          DEFAULT_CHALLENGE_BODY,
+                                          _ENVKEY_ERROR_MESSAGE)
 
 
 def make_environ(**kwds):
@@ -65,6 +69,20 @@ def make_environ(**kwds):
     environ["PATH_INFO"] = "/"
     environ.update(kwds)
     return environ
+
+
+def make_fake_jwt(payload):
+    """Make a fake JWT for testing purposes."""
+    payload = base64.urlsafe_b64encode(json.dumps(payload))
+    return ".".join(("FAKE", payload, "FAKE"))
+
+
+def make_fake_assertion(email, audience="http://localhost"):
+    """Make a fake, unsigned assertion for testing purposes."""
+    certificates = [make_fake_jwt({"principal": {"email": email}})]
+    assertion = make_fake_jwt({"aud": audience})
+    bundle = json.dumps({"certificates": certificates, "assertion": assertion})
+    return base64.urlsafe_b64encode(bundle).rstrip("=")
 
 
 class DummyRememberer(object):
@@ -89,8 +107,9 @@ def urlopen_valid(url, post_data):
     a JSON response indicating the posted assertion is valid.
     """
     params = urlparse.parse_qs(post_data)
+    info = parse_assertion(params["assertion"][0])
     data = '{ "status": "okay", "audience": "%s", "email": "%s" }'
-    return StringIO(data % (params["audience"][0], params["assertion"][0]))
+    return StringIO(data % (params["audience"][0], info["principal"]["email"]))
 
 
 def urlopen_invalid(url, post_data):
@@ -107,6 +126,7 @@ def urlopen_invalid(url, post_data):
 WHO_CONFIG = """
 [plugin:browserid]
 use = repoze.who.plugins.browserid:make_plugin
+audiences = http://localhost
 urlopen = repoze.who.plugins.browserid.tests.test_plugin:urlopen_valid
 rememberer_name = dummy
 
@@ -170,6 +190,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         def ref(name):
             return "repoze.who.plugins.browserid.tests.test_plugin:" + name
         plugin = make_plugin(
+            audiences="example.com",
             rememberer_name="remember_me_softly",
             postback_url="test_postback",
             assertion_field="da_assertion_baby",
@@ -179,9 +200,9 @@ class TestBrowserIDPlugin(unittest2.TestCase):
             challenge_body=ref("CHALLENGE_BODY"),
             verifier_url="http://invalid.org",
             urlopen=ref("urlopen_valid"),
-            audience="example.com",
-            check_secure="no",
+            check_https="no",
             check_referer="on")
+        self.assertEquals(plugin.audiences, ["example.com"])
         self.assertEquals(plugin.rememberer_name, "remember_me_softly")
         self.assertEquals(plugin.postback_url, "test_postback")
         self.assertEquals(plugin.assertion_field, "da_assertion_baby")
@@ -191,11 +212,11 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(plugin.challenge_body, "CHALLENGE HO!")
         self.assertEquals(plugin.verifier_url, "http://invalid.org")
         self.assertEquals(plugin.urlopen, urlopen_valid)
-        self.assertEquals(plugin.audience, "example.com")
-        self.assertEquals(plugin.check_secure, False)
+        self.assertEquals(plugin.check_https, False)
         self.assertEquals(plugin.check_referer, True)
         # Test that everything gets a sensible default.
-        plugin = make_plugin()
+        plugin = make_plugin("siteone sitetwo")
+        self.assertEquals(plugin.audiences, ["siteone", "sitetwo"])
         self.assertEquals(plugin.rememberer_name, None)
         self.assertEquals(plugin.postback_url,
                           "/repoze.who.plugins.browserid.postback")
@@ -206,25 +227,25 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(plugin.challenge_body, DEFAULT_CHALLENGE_BODY)
         self.assertEquals(plugin.verifier_url, None)
         self.assertEquals(plugin.urlopen, None)
-        self.assertEquals(plugin.audience, None)
-        self.assertEquals(plugin.check_secure, None)
+        self.assertEquals(plugin.check_https, None)
         self.assertEquals(plugin.check_referer, None)
         # Test that challenge body can be read from a file.
         with tempfile.NamedTemporaryFile() as f:
             f.write("CHALLENGE IN A FILE!")
             f.flush()
-            plugin = make_plugin(challenge_body=f.name)
+            plugin = make_plugin("www.mysite.com", challenge_body=f.name)
             self.assertEquals(plugin.challenge_body, "CHALLENGE IN A FILE!")
 
     def test_identify_with_no_credentials(self):
-        plugin = BrowserIDPlugin()
+        plugin = BrowserIDPlugin(None)
         environ = make_environ()
         identity = plugin.identify(environ)
         self.assertEquals(identity, None)
 
     def test_identify_with_POST_vars(self):
-        plugin = BrowserIDPlugin()
-        body = "assertion=test@example.com&csrf_token=123456"
+        plugin = BrowserIDPlugin(["localhost"])
+        assertion = make_fake_assertion("test@example.com")
+        body = "assertion=%s&csrf_token=123456" % (assertion,)
         environ = make_environ(REQUEST_METHOD="POST",
                                HTTP_COOKIE="browserid_csrf_token=123456",
                                CONTENT_LENGTH=len(body))
@@ -239,11 +260,12 @@ class TestBrowserIDPlugin(unittest2.TestCase):
                                PATH_INFO=plugin.postback_url)
         environ["wsgi.input"] = StringIO(body)
         identity = plugin.identify(environ)
-        self.assertEquals(identity["browserid.assertion"], "test@example.com")
+        self.assertEquals(identity["browserid.assertion"], assertion)
 
     def test_identify_with_bad_csrf(self):
-        plugin = BrowserIDPlugin()
-        body = "assertion=test@example.com&csrf_token=987654"
+        plugin = BrowserIDPlugin(None)
+        assertion = make_fake_assertion("test@example.com")
+        body = "assertion=%s&csrf_token=987654" % (assertion,)
         environ = make_environ(REQUEST_METHOD="POST",
                                HTTP_COOKIE="browserid_csrf_token=123456",
                                CONTENT_LENGTH=len(body),
@@ -253,8 +275,9 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(identity, None)
 
     def test_identify_with_missing_referer(self):
-        plugin = BrowserIDPlugin()
-        body = "assertion=test@example.com&csrf_token=123456"
+        plugin = BrowserIDPlugin(["localhost"])
+        assertion = make_fake_assertion("test@example.com")
+        body = "assertion=%s&csrf_token=123456" % (assertion,)
         environ = make_environ(REQUEST_METHOD="POST",
                                HTTP_COOKIE="browserid_csrf_token=123456",
                                HTTP_REFERER="http://evil.com/attackpage",
@@ -264,37 +287,44 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         # By default we don't check referer for http connections.
         environ["wsgi.url_scheme"] = "http"
         identity = plugin.identify(environ)
-        self.assertEquals(identity["browserid.assertion"], "test@example.com")
+        self.assertEquals(identity["browserid.assertion"], assertion)
         # But we do check them for https connections.
         environ["wsgi.url_scheme"] = "https"
         identity = plugin.identify(environ)
         self.assertEquals(identity, None)
 
     def test_auth_with_no_assertion(self):
-        plugin = BrowserIDPlugin(urlopen=urlopen_valid)
-        environ = make_environ(HTTP_HOST="localhost")
+        plugin = BrowserIDPlugin(None, urlopen=urlopen_valid)
+        environ = make_environ()
         identity = {"some other thing": "not browserid"}
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "No BrowserID assertion found")
 
     def test_auth_with_no_audience(self):
-        plugin = BrowserIDPlugin(urlopen=urlopen_valid)
+        plugin = BrowserIDPlugin(None, urlopen=urlopen_valid)
         environ = make_environ()
-        identity = {"browserid.assertion": "test@example.com"}
+        assertion = make_fake_assertion("test@example.com", "BAD")
+        identity = {"browserid.assertion": assertion}
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
+        self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
+                          "The audience \"BAD\" is not recognised")
 
     def test_auth_with_good_assertion(self):
-        plugin = BrowserIDPlugin(urlopen=urlopen_valid)
-        environ = make_environ(HTTP_HOST="localhost")
-        identity = {"browserid.assertion": "test@example.com"}
+        plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_valid)
+        environ = make_environ()
+        assertion = make_fake_assertion("test@example.com")
+        identity = {"browserid.assertion": assertion}
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, "test@example.com")
 
     def test_auth_with_bad_assertion(self):
-        plugin = BrowserIDPlugin(urlopen=urlopen_invalid)
-        environ = make_environ(HTTP_HOST="localhost")
-        identity = {"browserid.assertion": "test@example.com"}
+        plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_invalid)
+        environ = make_environ()
+        assertion = make_fake_assertion("test@example.com")
+        identity = {"browserid.assertion": assertion}
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
 
@@ -302,7 +332,8 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         api_factory = self._make_api_factory()
         environ = make_environ(HTTP_HOST="localhost")
         api = api_factory(environ)
-        identity = {"browserid.assertion": "test@example.com"}
+        assertion = make_fake_assertion("test@example.com")
+        identity = {"browserid.assertion": assertion}
         identity, headers = api.login(identity)
         self.assertEquals(identity["repoze.who.userid"], "test@example.com")
         self.assertEquals(headers[0][0], "X-Dummy-Remember")
@@ -319,7 +350,8 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.failUnless("POST" in r.body)
         self.failUnless(plugin.postback_url in r.body)
         # With good credentials, we get a redirect.
-        credentials = {"assertion": "test@example.com"}
+        assertion = make_fake_assertion("test@example.com")
+        credentials = {"assertion": assertion}
         credentials["csrf_token"] = r.cookies_set["browserid_csrf_token"]
         r = app.post(plugin.postback_url, credentials, status=302)
         self.assertEquals(r.headers["X-Dummy-Remember"], "test@example.com")
