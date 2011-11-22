@@ -46,18 +46,18 @@ the behaviour of the plugin:
                 audience does not match an item in the list will be rejected.
 
                 You must specify a value for this setting, since it is integral
-                to the security of BrowserID.  See the "security notes" section
+                to the security of BrowserID.  See the Security Notes section
                 below for more details.
-               
-  :rememberer_name:    The name of another repoze.who plugin which should be
-                       called to remember/forget the authentication.  This 
-                       would typically be a signed-cookie implementation such
-                       as the built-in auth_tkt plugin.  If unspecificed or 
-                       None then authentication will not be remembered.
 
-  :postback_url:    The URL to which BrowserID credentials should be sent
-                    for validation.  The default value is hopefully conflict
-                    free: /repoze.who.plugins.browserid.postback
+  :rememberer_name:   The name of another repoze.who plugin which should be
+                      called to remember/forget the authentication.  This 
+                      would typically be a signed-cookie implementation such
+                      as the built-in auth_tkt plugin.  If unspecificed or 
+                      None then authentication will not be remembered.
+
+  :postback_url:   The URL to which BrowserID credentials should be sent
+                   for validation.  The default value is hopefully conflict
+                   free: /repoze.who.plugins.browserid.postback.
 
   :assertion_field:   The name of the POST form field in which to find the
                       BrowserID assertion.  The default value is "assertion".
@@ -81,7 +81,7 @@ the behaviour of the plugin:
                      The contained HTML may use python string interpolation
                      syntax to include details of the challenge, e.g. use
                      %(csrf_token)s to include the CSRF token.
- 
+
   :verifier_url:   The URL of the BrowserID verifier service, to which all
                    assertions will be posted for checking.  The default value
                    is the standard browserid.org verifier and should be
