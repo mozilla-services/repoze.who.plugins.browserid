@@ -39,6 +39,7 @@ import urlparse
 import tempfile
 import base64
 import json
+import urllib2
 from StringIO import StringIO
 
 from zope.interface import implements
@@ -51,7 +52,7 @@ from repoze.who.middleware import PluggableAuthenticationMiddleware
 
 from webtest import TestApp
 
-from repoze.who.plugins.browserid.utils import secure_urlopen, parse_assertion
+from repoze.who.plugins.browserid.utils import parse_assertion
 from repoze.who.plugins.browserid import (BrowserIDPlugin,
                                           make_plugin,
                                           DEFAULT_CHALLENGE_BODY,
@@ -100,34 +101,28 @@ class DummyRememberer(object):
         return [("X-Dummy-Remember", "")]
 
 
-def urlopen_valid(url, post_data):
-    """Fake urlopen for testing purposes.
+class DummyVerifierValid(object):
+    """Dummy verifier class that thinks everything is valid."""
 
-    This function provides the required urlopen interface, but always returns
-    a JSON response indicating the posted assertion is valid.
-    """
-    params = urlparse.parse_qs(post_data)
-    info = parse_assertion(params["assertion"][0])
-    data = '{ "status": "okay", "audience": "%s", "email": "%s" }'
-    return StringIO(data % (params["audience"][0], info["principal"]["email"]))
+    def verify(self, assertion, audience=None):
+        info = parse_assertion(assertion)
+        return {"status": "okay",
+                "audience": info["audience"],
+                "email": info["principal"]["email"]}
 
 
-def urlopen_invalid(url, post_data):
-    """Fake urlopen for testing purposes.
+class DummyVerifierInvalid(object):
+    """Dummy verifier class that thinks everything is invalid."""
 
-    This function provides the required urlopen interface, but always returns
-    a JSON response indicating the posted assertion is invalid.
-    """
-    data = StringIO('{ "status": "failed" }')
-    data.info = lambda: {"Content-Length": str(len(data.getvalue()))}
-    return data
+    def verify(self, assertion, audience=None):
+        raise ValueError("Invalid BrowserID assertion")
 
 
 WHO_CONFIG = """
 [plugin:browserid]
 use = repoze.who.plugins.browserid:make_plugin
 audiences = http://localhost
-urlopen = repoze.who.plugins.browserid.tests.test_plugin:urlopen_valid
+verifier = repoze.who.plugins.browserid.tests.test_plugin:DummyVerifierValid
 rememberer_name = dummy
 
 [plugin:dummy]
@@ -198,8 +193,8 @@ class TestBrowserIDPlugin(unittest2.TestCase):
             csrf_field="for_your_protection",
             csrf_cookie_name="monster",
             challenge_body=ref("CHALLENGE_BODY"),
-            verifier_url="http://invalid.org",
-            urlopen=ref("urlopen_valid"),
+            verifier="vep:RemoteVerifier",
+            verifier_urlopen="urllib2:urlopen",
             check_https="no",
             check_referer="on")
         self.assertEquals(plugin.audiences, ["example.com"])
@@ -210,8 +205,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(plugin.csrf_field, "for_your_protection")
         self.assertEquals(plugin.csrf_cookie_name, "monster")
         self.assertEquals(plugin.challenge_body, "CHALLENGE HO!")
-        self.assertEquals(plugin.verifier_url, "http://invalid.org")
-        self.assertEquals(plugin.urlopen, urlopen_valid)
+        self.assertEquals(plugin.verifier.urlopen, urllib2.urlopen)
         self.assertEquals(plugin.check_https, False)
         self.assertEquals(plugin.check_referer, True)
         # Test that everything gets a sensible default.
@@ -225,8 +219,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(plugin.csrf_field, "csrf_token")
         self.assertEquals(plugin.csrf_cookie_name, "browserid_csrf_token")
         self.assertEquals(plugin.challenge_body, DEFAULT_CHALLENGE_BODY)
-        self.assertEquals(plugin.verifier_url, None)
-        self.assertEquals(plugin.urlopen, None)
+        self.assertEquals(plugin.verifier.__class__.__name__, "RemoteVerifier")
         self.assertEquals(plugin.check_https, None)
         self.assertEquals(plugin.check_referer, None)
         # Test that challenge body can be read from a file.
@@ -390,7 +383,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(identity, None)
 
     def test_auth_with_no_assertion(self):
-        plugin = BrowserIDPlugin(None, urlopen=urlopen_valid)
+        plugin = BrowserIDPlugin(None, verifier=DummyVerifierValid())
         environ = make_environ()
         identity = {"some other thing": "not browserid"}
         userid = plugin.authenticate(environ, identity)
@@ -399,7 +392,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
                           "No BrowserID assertion found")
 
     def test_auth_with_mismatched_audience(self):
-        plugin = BrowserIDPlugin(None, urlopen=urlopen_valid)
+        plugin = BrowserIDPlugin(None, verifier=DummyVerifierValid())
         environ = make_environ(HTTP_HOST="GOOD")
         assertion = make_fake_assertion("test@example.com", "BAD")
         identity = {"browserid.assertion": assertion}
@@ -409,7 +402,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
                           "The audience \"BAD\" is not recognised")
 
     def test_auth_with_unrecognised_audience(self):
-        plugin = BrowserIDPlugin(["GOOD"], urlopen=urlopen_valid)
+        plugin = BrowserIDPlugin(["GOOD"], verifier=DummyVerifierValid())
         environ = make_environ(HTTP_HOST="BAD")
         assertion = make_fake_assertion("test@example.com", "BAD")
         identity = {"browserid.assertion": assertion}
@@ -419,7 +412,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
                           "The audience \"BAD\" is not recognised")
 
     def test_auth_with_good_assertion(self):
-        plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_valid)
+        plugin = BrowserIDPlugin(["localhost"], verifier=DummyVerifierValid())
         environ = make_environ()
         assertion = make_fake_assertion("test@example.com")
         identity = {"browserid.assertion": assertion}
@@ -427,7 +420,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(userid, "test@example.com")
 
     def test_auth_with_invalid_assertion(self):
-        plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_invalid)
+        plugin = BrowserIDPlugin(["localhost"], verifier=DummyVerifierInvalid())
         environ = make_environ()
         assertion = make_fake_assertion("test@example.com")
         identity = {"browserid.assertion": assertion}
@@ -437,7 +430,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
                           "Invalid BrowserID assertion")
 
     def test_auth_with_malformed_assertion(self):
-        plugin = BrowserIDPlugin(["localhost"], urlopen=urlopen_invalid)
+        plugin = BrowserIDPlugin(["localhost"], verifier=DummyVerifierValid())
         environ = make_environ()
         identity = {"browserid.assertion": "JUNK"}
         userid = plugin.authenticate(environ, identity)
@@ -473,7 +466,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         r = app.post(plugin.postback_url, credentials, status=302)
         self.assertEquals(r.headers["X-Dummy-Remember"], "test@example.com")
         # With invalid credentials, we get the login page
-        plugin.urlopen = urlopen_invalid
+        plugin.verifier = DummyVerifierInvalid()
         r = app.post(plugin.postback_url, credentials, status=401)
         self.failIf("X-Dummy-Remember" in r.headers)
 

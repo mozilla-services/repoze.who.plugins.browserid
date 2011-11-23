@@ -54,8 +54,9 @@ from repoze.who.interfaces import IIdentifier, IAuthenticator, IChallenger
 from repoze.who.api import get_api
 from repoze.who.utils import resolveDotted
 
+import vep
+
 from repoze.who.plugins.browserid.utils import (str2bool,
-                                                verify_assertion,
                                                 parse_assertion,
                                                 check_url_origin)
 
@@ -80,8 +81,8 @@ class BrowserIDPlugin(object):
     (unverified) identity assertion.
 
     When used as an IAuthenticator, it will verifiy an extracted BrowserID
-    assertion by POSTing it to the browserid.org verifier service.  If valid
-    then the asserted email address is returned as the userid.
+    assertion using the PyVEP client library.  If valid then the asseted email
+    address is returned as the userid.
 
     When used as an IChallenger, it will send a HTML page with the necessary
     embedded javascript to trigger a BrowserID prompt and POST the assertion
@@ -92,8 +93,8 @@ class BrowserIDPlugin(object):
 
     def __init__(self, audiences, rememberer_name=None, postback_url=None,
                  assertion_field=None, came_from_field=None, csrf_field=None,
-                 csrf_cookie_name=None, challenge_body=None, verifier_url=None,
-                 urlopen=None, check_https=None, check_referer=None):
+                 csrf_cookie_name=None, challenge_body=None, verifier=None,
+                 check_https=None, check_referer=None):
         if postback_url is None:
             postback_url = "/repoze.who.plugins.browserid.postback"
         if assertion_field is None:
@@ -106,6 +107,8 @@ class BrowserIDPlugin(object):
             csrf_cookie_name = "browserid_csrf_token"
         if challenge_body is None:
             challenge_body = DEFAULT_CHALLENGE_BODY
+        if verifier is None:
+            verifier = vep.RemoteVerifier()
         self.audiences = audiences
         if audiences:
             audience_patterns = map(self._compile_audience_pattern, audiences)
@@ -118,8 +121,7 @@ class BrowserIDPlugin(object):
         self.csrf_field = csrf_field
         self.csrf_cookie_name = csrf_cookie_name
         self.challenge_body = challenge_body
-        self.verifier_url = verifier_url
-        self.urlopen = urlopen
+        self.verifier = verifier
         self.check_https = check_https
         self.check_referer = check_referer
 
@@ -291,25 +293,17 @@ class BrowserIDPlugin(object):
             self._rechallenge_at_postback(request)
             return None
         # Verify the assertion and extract data into the identity.
-        data = self._verify_assertion(assertion, audience)
-        if data is None:
-            environ[_ENVKEY_ERROR_MESSAGE] = "Invalid BrowserID assertion"
+        try:
+            data = self.verifier.verify(assertion)
+        except Exception, e:
+            msg = "Invalid BrowserID assertion"
+            environ[_ENVKEY_ERROR_MESSAGE] = msg
             self._rechallenge_at_postback(request)
             return None
         # Success!
         userid = identity["email"] = data["email"]
         self._redirect_from_postback(request, identity)
         return userid
-
-    def _verify_assertion(self, assertion, audience):
-        """Verify the given BrowserID assertion.
-
-        This is a thin wrapper around the utils:verify_assertion function,
-        providing some defaults from the plugin configuration.
-        """
-        return verify_assertion(assertion, audience,
-                                urlopen=self.urlopen,
-                                verifier_url=self.verifier_url)
 
     def _check_csrf_token(self, request):
         """Check if the request has a valid CSRF-protection token.
@@ -392,8 +386,8 @@ class BrowserIDPlugin(object):
 
 def make_plugin(audiences, rememberer_name=None, postback_url=None,
                 assertion_field=None, came_from_field=None, csrf_field=None,
-                csrf_cookie_name=None, challenge_body=None, verifier_url=None,
-                urlopen=None, check_https=None, check_referer=None):
+                csrf_cookie_name=None, challenge_body=None, verifier=None,
+                check_https=None, check_referer=None, **kwds):
     """Make a BrowserIDPlugin using values from a .ini config file.
 
     This is a helper function for loading a BrowserIDPlugin via the
@@ -410,18 +404,24 @@ def make_plugin(audiences, rememberer_name=None, postback_url=None,
         except (ValueError, ImportError):
             with open(challenge_body, "rb") as f:
                 challenge_body = f.read()
-    if isinstance(urlopen, basestring):
-        urlopen = resolveDotted(urlopen)
-        if urlopen is not None:
-            assert callable(urlopen)
+    if isinstance(verifier, basestring):
+        verifier = resolveDotted(verifier)
+        if callable(verifier):
+            verifier_kwds = {}
+            for key, value in kwds.iteritems():
+                if key == "verifier_urlopen":
+                    value = resolveDotted(value)
+                if key.startswith("verifier_"):
+                    verifier_kwds[key[len("verifier_"):]] = value 
+            verifier = verifier(**verifier_kwds)
     if isinstance(check_https, basestring):
         check_https = str2bool(check_https)
     if isinstance(check_referer, basestring):
         check_referer = str2bool(check_referer)
     plugin = BrowserIDPlugin(audiences, rememberer_name, postback_url,
                              assertion_field, came_from_field, csrf_field,
-                             csrf_cookie_name, challenge_body, verifier_url,
-                             urlopen, check_https, check_referer)
+                             csrf_cookie_name, challenge_body, verifier,
+                             check_https, check_referer)
     return plugin
 
 

@@ -6,9 +6,11 @@ This is repoze.who plugin for authentication via Mozilla's BrowserID project:
 
     https://browserid.org/
 
-It currently supports verification of BrowserID assertions by posting them 
-to the browserid.org verifier services.  As the protocol becomes more stable
-it will grow the ability to verify assertions locally.
+It supports verification of BrowserID assertions using the PyVEP client
+library.  Currently PyVEP defaults to posting assertions to the browserid.org
+verifier servive, but it also has preliminary support for verifying assertions
+locally.  As the protocol becomes more stable then local verification will
+become the default.
 
 Configuration of the plugin can be done from the standard repoze.who config
 file like so::
@@ -82,15 +84,10 @@ the behaviour of the plugin:
                      syntax to include details of the challenge, e.g. use
                      %(csrf_token)s to include the CSRF token.
 
-  :verifier_url:   The URL of the BrowserID verifier service, to which all
-                   assertions will be posted for checking.  The default value
-                   is the standard browserid.org verifier and should be
-                   suitable for all purposes.
-
-  :urlopen:   The dotted python name of a callable implementing the same API
-              as urllib.urlopen, which will be used to access the BrowserID
-              verifier service.  The default value utils:secure_urlopen which
-              does strict HTTPS certificate checking by default.
+  :verifier:   The PyVEP Verifier object to use for checking assertions, or
+               the dotted python name of such an object.  The default value
+               is vep.RemoteVerifier() which should be suitable for most
+               purposes.
 
   :check_https:   Boolean indicating whether to reject login attempts over
                   enencrypted connections.  The default value is False.
