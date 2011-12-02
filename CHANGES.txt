@@ -1,4 +1,11 @@
-0.1 - 2011-11-15
-================
+0.2.0 - 2011-12-01
+==================
 
-Initial release.
+ * Refactor verification code into a standand-alone library named
+   "PyVEP", which is now a dependency.
+
+
+0.1.0 - 2011-11-15
+==================
+
+ * Initial release.
