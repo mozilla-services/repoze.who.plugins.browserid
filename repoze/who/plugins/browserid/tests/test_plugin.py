@@ -35,7 +35,6 @@
 # ***** END LICENSE BLOCK *****
 
 import unittest2
-import urlparse
 import tempfile
 import base64
 import json
@@ -265,13 +264,12 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         environ = make_environ(REQUEST_METHOD="GET",
                                HTTP_COOKIE="browserid_csrf_token=123456",
                                PATH_INFO=plugin.postback_url,
-                               QUERY_STRING = query_string)
+                               QUERY_STRING=query_string)
         identity = plugin.identify(environ)
         self.assertEquals(identity, None)
 
     def test_identify_with_no_assertion(self):
         plugin = BrowserIDPlugin(["localhost"])
-        assertion = make_fake_assertion("test@example.com")
         body = "csrf_token=123456"
         environ = make_environ(REQUEST_METHOD="POST",
                                HTTP_COOKIE="browserid_csrf_token=123456",
@@ -420,7 +418,8 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(userid, "test@example.com")
 
     def test_auth_with_invalid_assertion(self):
-        plugin = BrowserIDPlugin(["localhost"], verifier=DummyVerifierInvalid())
+        plugin = BrowserIDPlugin(["localhost"],
+                                 verifier=DummyVerifierInvalid())
         environ = make_environ()
         assertion = make_fake_assertion("test@example.com")
         identity = {"browserid.assertion": assertion}
@@ -474,7 +473,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         app = TestApp(self._make_wsgi_app())
         plugin = app.app.api_factory.identifiers[0][1]
         # With no credentials, we get the challenge page.
-        extra_environ = {"HTTP_HOST":"localhost", "wsgi.url_scheme":"https"}
+        extra_environ = {"HTTP_HOST": "localhost", "wsgi.url_scheme": "https"}
         r = app.get("/", status=401, extra_environ=extra_environ)
         self.failUnless("POST" in r.body)
         self.failUnless(plugin.postback_url in r.body)

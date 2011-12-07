@@ -303,7 +303,7 @@ class BrowserIDPlugin(object):
         # Verify the assertion and extract data into the identity.
         try:
             data = self.verifier.verify(assertion)
-        except Exception, e:
+        except Exception:
             msg = "Invalid BrowserID assertion"
             environ[_ENVKEY_ERROR_MESSAGE] = msg
             self._rechallenge_at_postback(request)
@@ -420,7 +420,7 @@ def make_plugin(audiences, rememberer_name=None, postback_url=None,
                 if key == "verifier_urlopen":
                     value = resolveDotted(value)
                 if key.startswith("verifier_"):
-                    verifier_kwds[key[len("verifier_"):]] = value 
+                    verifier_kwds[key[len("verifier_"):]] = value
             verifier = verifier(**verifier_kwds)
     if isinstance(check_https, basestring):
         check_https = str2bool(check_https)

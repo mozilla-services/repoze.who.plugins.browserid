@@ -39,7 +39,6 @@ Helper functions for repoze.who.plugins.browserid.
 
 """
 
-import json
 from urlparse import urlparse
 
 import vep.utils
