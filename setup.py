@@ -10,10 +10,10 @@ with open(os.path.join(here, 'README.rst')) as f:
 with open(os.path.join(here, 'CHANGES.txt')) as f:
     CHANGES = f.read()
 
-requires = ['repoze.who >= 2.0', 'unittest2', 'webtest', 'PyVEP']
+requires = ['repoze.who >= 2.0', 'unittest2', 'webtest', 'PyVEP >= 0.2.0']
 
 setup(name='repoze.who.plugins.browserid',
-      version='0.2.0',
+      version='0.2.1',
       description='repoze.who.plugins.browserid',
       long_description=README + '\n\n' + CHANGES,
       classifiers=[

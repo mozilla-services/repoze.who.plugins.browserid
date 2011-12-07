@@ -42,7 +42,7 @@ Helper functions for repoze.who.plugins.browserid.
 import json
 from urlparse import urlparse
 
-import vep
+import vep.utils
 
 
 def check_url_origin(origin, url):
@@ -98,7 +98,7 @@ def parse_assertion(assertion):
     info = {}
     # Decode the bundled-assertion envelope.
     try:
-        data = json.loads(vep.decode_bytes(assertion))
+        data = vep.utils.decode_json_bytes(assertion)
         certificates = data["certificates"]
         assertion = data["assertion"]
         # Get the asserted principal out of the certificate chain.
@@ -117,7 +117,7 @@ def parse_jwt(token):
     information.  It does not validate the signature.
     """
     payload = token.split(".")[1]
-    return json.loads(vep.decode_bytes(payload))
+    return vep.utils.decode_json_bytes(payload)
 
 
 def str2bool(value):
