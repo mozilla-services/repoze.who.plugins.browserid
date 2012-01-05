@@ -41,8 +41,6 @@ Helper functions for repoze.who.plugins.browserid.
 
 from urlparse import urlparse
 
-import vep.utils
-
 
 def check_url_origin(origin, url):
     """Check that the origin of the given URL matches the expected value.
@@ -79,44 +77,6 @@ def check_url_origin(origin, url):
         return False
     # OK, looks good.
     return True
-
-
-def parse_assertion(assertion):
-    """Parse interesting information out of a BrowserID assertion.
-
-    This function decodes and parses the given BrowserID assertion, returning
-    a dict with the following items:
-
-       * principal:  the asserted identity, eg: {"email": "test@example.com"}
-       * audience:   the audience to whom it is asserted
-
-    This does *not* verify the assertion at all, it is merely a way to see
-    the information that is being asserted.  If the assertion is malformed
-    then ValueError will be raised.
-    """
-    info = {}
-    # Decode the bundled-assertion envelope.
-    try:
-        data = vep.utils.decode_json_bytes(assertion)
-        certificates = data["certificates"]
-        assertion = data["assertion"]
-        # Get the asserted principal out of the certificate chain.
-        info["principal"] = parse_jwt(certificates[0])["principal"]
-        # Get the audience out of the assertion token.
-        info["audience"] = parse_jwt(assertion)["aud"]
-    except (TypeError, KeyError), e:
-        raise ValueError(str(e))
-    return info
-
-
-def parse_jwt(token):
-    """Parse a JWT to get the contained information.
-
-    This function parses a JSON Web Token and returns the contained dict of
-    information.  It does not validate the signature.
-    """
-    payload = token.split(".")[1]
-    return vep.utils.decode_json_bytes(payload)
 
 
 def str2bool(value):

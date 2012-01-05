@@ -63,10 +63,10 @@ from repoze.who.api import get_api
 from repoze.who.utils import resolveDotted
 
 import vep
+import vep.utils
 
-from repoze.who.plugins.browserid.utils import (str2bool,
-                                                parse_assertion,
-                                                check_url_origin)
+from repoze.who.plugins.browserid.utils import str2bool, check_url_origin
+                                                
 
 
 # We store error messages in the WSGI environ under this key.
@@ -173,7 +173,7 @@ class BrowserIDPlugin(object):
             return None
         # Parse out the audience, which also checks well-formedness.
         try:
-            audience = parse_assertion(assertion)["audience"]
+            audience = vep.utils.get_assertion_info(assertion)["audience"]
         except (ValueError, KeyError):
             environ[_ENVKEY_ERROR_MESSAGE] = "Malformed BrowserID assertion"
             self._rechallenge_at_postback(request)
@@ -287,7 +287,7 @@ class BrowserIDPlugin(object):
         audience = identity.get("browserid.audience")
         if audience is None:
             try:
-                audience = parse_assertion(assertion)["audience"]
+                audience = vep.utils.get_assertion_info(assertion)["audience"]
                 identity["browserid.audience"] = audience
             except (ValueError, KeyError):
                 msg = "Malformed BrowserID assertion"
@@ -385,7 +385,7 @@ class BrowserIDPlugin(object):
         if request.path == self.postback_path:
             came_from = request.params.get(self.came_from_field)
             if came_from is None:
-                came_from = request.referer or "/"
+                came_from = "/"
             response = Response()
             response.status = 302
             response.location = came_from

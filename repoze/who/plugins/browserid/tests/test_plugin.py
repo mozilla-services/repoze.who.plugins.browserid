@@ -51,7 +51,8 @@ from repoze.who.middleware import PluggableAuthenticationMiddleware
 
 from webtest import TestApp
 
-from repoze.who.plugins.browserid.utils import parse_assertion
+from vep.utils import get_assertion_info
+
 from repoze.who.plugins.browserid import (BrowserIDPlugin,
                                           make_plugin,
                                           DEFAULT_CHALLENGE_BODY,
@@ -104,7 +105,7 @@ class DummyVerifierValid(object):
     """Dummy verifier class that thinks everything is valid."""
 
     def verify(self, assertion, audience=None):
-        info = parse_assertion(assertion)
+        info = get_assertion_info(assertion)
         return {"status": "okay",
                 "audience": info["audience"],
                 "email": info["principal"]["email"]}
