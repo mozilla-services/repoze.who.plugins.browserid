@@ -260,6 +260,8 @@ class BrowserIDPlugin(object):
             challenge_vars["csrf_token"] = csrf_token
             challenge_vars["error_message"] = error_message
             challenge_body = self.challenge_body % challenge_vars
+            if isinstance(challenge_body, unicode):
+                challenge_body = challenge_body.encode("utf8")
             # Send the challenge page as text/html.
             headers.append(("Content-Type", "text/html"))
             start_response(status, headers)

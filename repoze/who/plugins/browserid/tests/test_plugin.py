@@ -479,3 +479,11 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.failUnless("POST" in r.body)
         self.failUnless(plugin.postback_url in r.body)
         self.failUnless("Secure" in r.headers['Set-Cookie'])
+
+    def test_handling_of_unicode_body(self):
+        app = TestApp(self._make_wsgi_app())
+        plugin = app.app.api_factory.identifiers[0][1]
+        plugin.challenge_body += u"/postback_\N{SNOWMAN}"
+        extra_environ = {"HTTP_HOST": "localhost", "wsgi.url_scheme": "https"}
+        r = app.get("/", status=401, extra_environ=extra_environ)
+        self.assertEquals(r.body.decode("utf8")[-1], u"\N{SNOWMAN}")
