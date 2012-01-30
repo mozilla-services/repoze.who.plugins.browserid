@@ -1,7 +1,8 @@
-0.3.1 - XXXX-XX-XX
+0.3.1 - 2012-01-30
 ==================
 
  * Don't choke on unicode in challenge_body; thanks catlee.
+ * Update license to MPL 2.0.
 
 
 0.3.0 - 2012-01-06
