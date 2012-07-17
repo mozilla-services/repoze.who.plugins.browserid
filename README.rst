@@ -2,15 +2,16 @@
 repoze.who.plugins.browserid
 ============================
 
-This is repoze.who plugin for authentication via Mozilla's BrowserID project:
+This is repoze.who plugin for authentication via Mozilla's Persona project,
+a.k.a BrowserID:
 
-    https://browserid.org/
+    https://persona.org/
 
-It supports verification of BrowserID assertions using the PyVEP client
-library.  Currently PyVEP defaults to posting assertions to the browserid.org
-verifier servive, but it also has preliminary support for verifying assertions
-locally.  As the protocol becomes more stable then local verification will
-become the default.
+It supports verification of BrowserID assertions using the PyBrowserID client
+library.  Currently PyBrowserID defaults to verifying assertions by posting
+them to the persona.org verifier servive, but it also has preliminary support
+for verifying assertions locally.  As the protocol becomes more stable then
+local verification will become the default.
 
 Configuration of the plugin can be done from the standard repoze.who config
 file like so::

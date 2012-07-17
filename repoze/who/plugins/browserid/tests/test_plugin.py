@@ -19,7 +19,8 @@ from repoze.who.middleware import PluggableAuthenticationMiddleware
 
 from webtest import TestApp
 
-from vep.utils import get_assertion_info
+from browserid.verifiers import Verifier
+from browserid.utils import get_assertion_info
 
 from repoze.who.plugins.browserid import (BrowserIDPlugin,
                                           make_plugin,
@@ -69,18 +70,23 @@ class DummyRememberer(object):
         return [("X-Dummy-Remember", "")]
 
 
-class DummyVerifierValid(object):
+class DummyVerifierValid(Verifier):
     """Dummy verifier class that thinks everything is valid."""
 
     def verify(self, assertion, audience=None):
         info = get_assertion_info(assertion)
+        self.check_audience(assertion, audience)
         return {"status": "okay",
                 "audience": info["audience"],
                 "email": info["principal"]["email"]}
 
 
-class DummyVerifierInvalid(object):
+class DummyVerifierInvalid(Verifier):
     """Dummy verifier class that thinks everything is invalid."""
+
+    def __init__(self, **kwds):
+        for attr in kwds:
+            setattr(self, attr, kwds[attr])
 
     def verify(self, assertion, audience=None):
         raise ValueError("Invalid BrowserID assertion")
@@ -161,8 +167,8 @@ class TestBrowserIDPlugin(unittest2.TestCase):
             csrf_field="for_your_protection",
             csrf_cookie_name="monster",
             challenge_body=ref("CHALLENGE_BODY"),
-            verifier="vep:RemoteVerifier",
-            verifier_urlopen="urllib2:urlopen",
+            verifier=ref("DummyVerifierInvalid"),
+            verifier_test_kwd="TESTING",
             check_https="no",
             check_referer="on")
         self.assertEquals(plugin.audiences, ["example.com"])
@@ -173,9 +179,10 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         self.assertEquals(plugin.csrf_field, "for_your_protection")
         self.assertEquals(plugin.csrf_cookie_name, "monster")
         self.assertEquals(plugin.challenge_body, "CHALLENGE HO!")
-        self.assertEquals(plugin.verifier.urlopen, urllib2.urlopen)
         self.assertEquals(plugin.check_https, False)
         self.assertEquals(plugin.check_referer, True)
+        self.assertEquals(plugin.verifier.__class__, DummyVerifierInvalid)
+        self.assertEquals(plugin.verifier.test_kwd, "TESTING")
         # Test that everything gets a sensible default.
         plugin = make_plugin("siteone sitetwo")
         self.assertEquals(plugin.audiences, ["siteone", "sitetwo"])
@@ -366,7 +373,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
         self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
-                          "The audience \"BAD\" is not recognised")
+                          "Invalid BrowserID assertion")
 
     def test_auth_with_unrecognised_audience(self):
         plugin = BrowserIDPlugin(["GOOD"], verifier=DummyVerifierValid())
@@ -376,7 +383,7 @@ class TestBrowserIDPlugin(unittest2.TestCase):
         userid = plugin.authenticate(environ, identity)
         self.assertEquals(userid, None)
         self.assertEquals(environ[_ENVKEY_ERROR_MESSAGE],
-                          "The audience \"BAD\" is not recognised")
+                          "Invalid BrowserID assertion")
 
     def test_auth_with_good_assertion(self):
         plugin = BrowserIDPlugin(["localhost"], verifier=DummyVerifierValid())

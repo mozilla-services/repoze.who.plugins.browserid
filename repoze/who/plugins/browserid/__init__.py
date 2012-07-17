@@ -3,23 +3,22 @@
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-A repoze.who plugin for authentication via BrowserID:
+A repoze.who plugin for authentication via Mozilla Persona, a.k.a the
+BrowserID protocol:
 
-    https://browserid.org/
+    https://login.persona.org/
 
 """
 
 __ver_major__ = 0
-__ver_minor__ = 3
-__ver_patch__ = 1
+__ver_minor__ = 4
+__ver_patch__ = 0
 __ver_sub__ = ""
 __ver_tuple__ = (__ver_major__, __ver_minor__, __ver_patch__, __ver_sub__)
 __version__ = "%d.%d.%d%s" % __ver_tuple__
 
 
 import os
-import re
-import fnmatch
 from urlparse import urlparse, urljoin
 
 from zope.interface import implements
@@ -30,8 +29,8 @@ from repoze.who.interfaces import IIdentifier, IAuthenticator, IChallenger
 from repoze.who.api import get_api
 from repoze.who.utils import resolveDotted
 
-import vep
-import vep.utils
+import browserid
+import browserid.utils
 
 from repoze.who.plugins.browserid.utils import str2bool, check_url_origin
                                                 
@@ -46,19 +45,19 @@ class BrowserIDPlugin(object):
     """A repoze.who plugin for authentication via BrowserID.
 
     This plugin provides a repoze.who IIdentifier/IAuthenticator/IChallenger
-    implementing the Verified Email Protocol as defined by Mozilla's
-    BrowserID project:
+    implementing the BrowserID Protocol as defined by Mozilla's Persona
+    project:
 
-        https://browserid.org/
+        https://login.persona.org/
 
     When used as an IIdentifier, it will process POST requests to a configured
     URL as attempts to log in using BrowserID.  The identity extracted from
     such requests will contain the key "browserid.assertion" giving the
     (unverified) identity assertion.
 
-    When used as an IAuthenticator, it will verifiy an extracted BrowserID
-    assertion using the PyVEP client library.  If valid then the asseted email
-    address is returned as the userid.
+    When used as an IAuthenticator, it will verify an extracted BrowserID
+    assertion using the PyBrowserID client library.  If valid then the asserted
+    email address is returned as the userid.
 
     When used as an IChallenger, it will send a HTML page with the necessary
     embedded javascript to trigger a BrowserID prompt and POST the assertion
@@ -84,11 +83,8 @@ class BrowserIDPlugin(object):
         if challenge_body is None:
             challenge_body = DEFAULT_CHALLENGE_BODY
         if verifier is None:
-            verifier = vep.RemoteVerifier()
+            verifier = browserid.RemoteVerifier()
         self.audiences = audiences
-        if audiences:
-            audience_patterns = map(self._compile_audience_pattern, audiences)
-            self._audience_patterns = audience_patterns
         self.rememberer_name = rememberer_name
         self.postback_url = postback_url
         self.postback_path = urlparse(postback_url).path
@@ -141,7 +137,8 @@ class BrowserIDPlugin(object):
             return None
         # Parse out the audience, which also checks well-formedness.
         try:
-            audience = vep.utils.get_assertion_info(assertion)["audience"]
+            info = browserid.utils.get_assertion_info(assertion)
+            audience = info["audience"]
         except (ValueError, KeyError):
             environ[_ENVKEY_ERROR_MESSAGE] = "Malformed BrowserID assertion"
             self._rechallenge_at_postback(request)
@@ -253,26 +250,21 @@ class BrowserIDPlugin(object):
             environ[_ENVKEY_ERROR_MESSAGE] = "No BrowserID assertion found"
             self._rechallenge_at_postback(request)
             return None
-        # Get the audience, using cache in identity if given.
-        audience = identity.get("browserid.audience")
-        if audience is None:
+        # Check for well-formedness of the assertion.
+        # Bypass if we already successfully parsed out the audience.
+        if "browserid.audience" not in identity:
             try:
-                audience = vep.utils.get_assertion_info(assertion)["audience"]
-                identity["browserid.audience"] = audience
+                info = browserid.utils.get_assertion_info(assertion)
+                identity["browserid.audience"] = info["audience"]
             except (ValueError, KeyError):
                 msg = "Malformed BrowserID assertion"
                 environ[_ENVKEY_ERROR_MESSAGE] = msg
                 self._rechallenge_at_postback(request)
                 return None
-        # Check that the audience matches one of the expected values.
-        if not self._check_audience(request, audience):
-            msg = "The audience \"%s\" is not recognised" % (audience,)
-            environ[_ENVKEY_ERROR_MESSAGE] = msg
-            self._rechallenge_at_postback(request)
-            return None
         # Verify the assertion and extract data into the identity.
+        # Also make sure it matches on of the configured list of audiences.
         try:
-            data = self.verifier.verify(assertion)
+            data = self.verifier.verify(assertion, self.audiences)
         except Exception:
             msg = "Invalid BrowserID assertion"
             environ[_ENVKEY_ERROR_MESSAGE] = msg
@@ -323,27 +315,6 @@ class BrowserIDPlugin(object):
                 return False
         return True
 
-    def _check_audience(self, request, audience):
-        """Check that the audience is valid according to our configuration.
-
-        This function uses the configured list of valid audience patterns to
-        verify the given audience.  If no audience values have been configured
-        then it matches against the Host header from the request.
-        """
-        if not self.audiences:
-            return audience == request.host_url
-        for audience_pattern in self._audience_patterns:
-            if audience_pattern.match(audience):
-                return True
-        return False
-
-    def _compile_audience_pattern(self, pattern):
-        """Compile a glob-style audience pattern into a regular expression."""
-        re_pattern = fnmatch.translate(pattern)
-        if "://" not in pattern:
-            re_pattern = "[a-z]+://" + re_pattern
-        return re.compile(re_pattern)
-
     def _rechallenge_at_postback(self, request):
         """Re-issue a failed auth challenge at the postback url."""
         if request.path == self.postback_path:
@@ -387,8 +358,6 @@ def make_plugin(audiences, rememberer_name=None, postback_url=None,
         if callable(verifier):
             verifier_kwds = {}
             for key, value in kwds.iteritems():
-                if key == "verifier_urlopen":
-                    value = resolveDotted(value)
                 if key.startswith("verifier_"):
                     verifier_kwds[key[len("verifier_"):]] = value
             verifier = verifier(**verifier_kwds)
@@ -410,7 +379,7 @@ DEFAULT_CHALLENGE_BODY = """
 <head>
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.min.js"
         type="text/javascript"></script>
-<script src="https://browserid.org/include.js"
+<script src="https://login.persona.org/include.js"
         type="text/javascript"></script>
 </head>
 <body>
@@ -426,7 +395,7 @@ $(function() {
     // we're actually capable of doing it.
     //
     $("<h3>%(error_message)s</h3>" +
-      "<img src='https://browserid.org/i/sign_in_blue.png' id='signin'" +
+      "<img src='https://login.persona.org/i/sign_in_blue.png' id='signin'" +
       "     alt='sign-in button' />").appendTo($("body"));
 
     // Fire up the BrowserID callback when clicked.
