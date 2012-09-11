@@ -1,3 +1,10 @@
+0.5.0 - 2012-09-11
+==================
+
+ * Fix javascript to use navigator.id.get() instead of the deprecated
+   navigator.id.getVerifiedEmail.
+
+
 0.4.0 - 2012-07-17
 ==================
 
